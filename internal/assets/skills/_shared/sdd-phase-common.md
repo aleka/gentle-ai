@@ -1,6 +1,6 @@
 # SDD Phase — Common Protocol
 
-This file contains boilerplate that is **identical** across all SDD phase skills (explore, propose, spec, design, tasks, apply). Sub-agents should load this alongside their phase-specific SKILL.md.
+This file contains boilerplate that is **identical** across all SDD phase skills (explore, propose, spec, design, tasks, apply, verify, archive). Sub-agents should load this alongside their phase-specific SKILL.md.
 
 ---
 
