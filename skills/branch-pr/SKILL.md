@@ -51,23 +51,30 @@ Load this skill whenever you need to:
 
 ## Branch Naming
 
-| Prefix | Use For | Example |
-|--------|---------|---------|
-| `fix/` | Bug fixes | `fix/agent-claude-detection-linux` |
-| `feat/` | New features | `feat/tui-keyboard-help-overlay` |
-| `docs/` | Documentation only | `docs/update-contributing-guide` |
-| `refactor/` | Code refactoring | `refactor/pipeline-step-interface` |
-| `chore/` | Build, CI, tooling | `chore/add-unit-tests-ci-job` |
+Branch names **must** match this pattern:
 
-Branch names must be:
-- Lowercase, hyphen-separated
-- Descriptive but concise
-- Prefixed to match the PR type label
-
-```bash
-# Create and switch to a new branch
-git checkout -b fix/agent-claude-detection-linux
 ```
+^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)\/[a-z0-9._-]+$
+```
+
+| Type | Example |
+|------|---------|
+| `feat/` | `feat/user-login` |
+| `fix/` | `fix/duplicate-observation-insert` |
+| `docs/` | `docs/api-reference-update` |
+| `refactor/` | `refactor/extract-query-sanitizer` |
+| `chore/` | `chore/bump-bubbletea-v0.26` |
+| `style/` | `style/fix-linter-warnings` |
+| `perf/` | `perf/optimize-catalog-loading` |
+| `test/` | `test/add-pipeline-coverage` |
+| `build/` | `build/update-goreleaser-config` |
+| `ci/` | `ci/add-e2e-docker-job` |
+| `revert/` | `revert/undo-model-picker-change` |
+
+**Rules:**
+- All lowercase
+- Use hyphens, dots, or underscores as separators (no spaces, no uppercase)
+- Description must be short and descriptive
 
 ---
 
@@ -144,53 +151,65 @@ All 5 checks run on every PR and **all must pass** before merge:
 
 ## Conventional Commits
 
-All commits on this project MUST follow [Conventional Commits](https://www.conventionalcommits.org/).
+Commit messages **must** match this pattern:
+
+```
+^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9\._-]+\))?!?: .+
+```
 
 ### Format
 
 ```
-<type>(<scope>): <short description>
+<type>(<optional-scope>)!: <description>
 
 [optional body]
 
 [optional footer]
 ```
 
-### Type → Label Mapping
+### Allowed Types
 
-| Commit Type | PR Label | Description |
-|-------------|----------|-------------|
-| `fix` | `type:bug` | Bug fix |
-| `feat` | `type:feature` | New feature or enhancement |
-| `docs` | `type:docs` | Documentation changes only |
-| `refactor` | `type:refactor` | Refactoring, no functional changes |
-| `chore` | `type:chore` | Build, CI, tooling |
-| `feat!` / `fix!` | `type:breaking-change` | Breaking change (add `!` and `BREAKING CHANGE:` footer) |
-| `test` | `type:chore` | Adding or updating tests |
-| `perf` | `type:feature` or `type:refactor` | Performance improvement |
+| Type | Purpose | PR Label |
+|------|---------|----------|
+| `feat` | New feature | `type:feature` |
+| `fix` | Bug fix | `type:bug` |
+| `docs` | Documentation only | `type:docs` |
+| `refactor` | Code change (no behavior change) | `type:refactor` |
+| `chore` | Maintenance, dependencies, tooling | `type:chore` |
+| `style` | Formatting, linting (no logic change) | `type:chore` |
+| `perf` | Performance improvement | `type:feature` |
+| `test` | Adding or updating tests | `type:chore` |
+| `build` | Build system or external deps | `type:chore` |
+| `ci` | CI configuration | `type:chore` |
+| `revert` | Reverts a previous commit | matches reverted type |
 
-### Valid Scopes
+### Breaking Changes
 
-`tui`, `cli`, `installer`, `catalog`, `system`, `agent`, `e2e`, `ci`, `docs`
+Add `!` after the type/scope:
 
-### Examples
-
-```bash
-feat(tui): add progress bar to installation steps
-fix(agent): correct Claude Code detection on macOS
-docs: update contributing guide with E2E test instructions
-chore(ci): add unit tests job to CI workflow
-test(installer): add coverage for catalog step execution
-refactor(pipeline): extract step runner interface
 ```
-
-### Breaking Change
-
-```bash
 feat(cli)!: rename --config flag to --config-file
 
 BREAKING CHANGE: the --config flag has been renamed to --config-file.
-Update your scripts and aliases accordingly.
+```
+
+Breaking changes map to `type:breaking-change` label.
+
+### Examples
+
+```
+feat(tui): add progress bar to installation steps
+fix(agent): correct Claude Code detection on macOS
+docs: update contributing guide
+chore(deps): bump bubbletea to v0.26
+refactor(pipeline): extract step executor
+style: fix linter warnings in catalog package
+perf(system): cache OS detection result
+test(installer): add coverage for catalog step execution
+build: update goreleaser config for arm64
+ci: split unit and e2e test jobs
+revert: undo model picker redesign
+feat(cli)!: change default config path
 ```
 
 ---

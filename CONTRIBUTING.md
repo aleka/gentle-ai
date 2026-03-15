@@ -132,45 +132,57 @@ chmod +x docker-test.sh
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/).
 
+Commit messages **must** match this pattern:
+
+```
+^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9\._-]+\))?!?: .+
+```
+
 ### Format
 
 ```
-<type>(<scope>): <description>
+<type>(<optional-scope>)!: <description>
 
 [optional body]
 
 [optional footer]
 ```
 
-### Types
+### Allowed Types
 
-| Type | When to Use |
-|------|-------------|
+| Type | Purpose |
+|------|---------|
 | `feat` | New feature |
 | `fix` | Bug fix |
-| `refactor` | Code change that's neither fix nor feature |
-| `docs` | Documentation changes |
-| `test` | Adding or updating tests |
-| `chore` | Build, CI, tooling |
+| `docs` | Documentation only |
+| `refactor` | Code change (no behavior change) |
+| `chore` | Maintenance, dependencies, tooling |
+| `style` | Formatting, linting (no logic change) |
 | `perf` | Performance improvement |
-
-### Scopes (optional but recommended)
-
-`tui`, `cli`, `installer`, `catalog`, `system`, `agent`, `e2e`, `ci`, `docs`
+| `test` | Adding or updating tests |
+| `build` | Build system or external deps |
+| `ci` | CI configuration |
+| `revert` | Reverts a previous commit |
 
 ### Examples
 
 ```
 feat(tui): add progress bar to installation steps
 fix(agent): correct Claude Code detection on macOS
-docs: update contributing guide with E2E test instructions
-chore(ci): add unit tests job to CI workflow
+docs: update contributing guide
+chore(deps): bump bubbletea to v0.26
+refactor(pipeline): extract step executor
+style: fix linter warnings in catalog package
+perf(system): cache OS detection result
 test(installer): add coverage for catalog step execution
+build: update goreleaser config for arm64
+ci: split unit and e2e test jobs
+revert: undo model picker redesign
 ```
 
 ### Breaking Changes
 
-For breaking changes, add `!` after the type and include a `BREAKING CHANGE:` footer:
+Add `!` after the type/scope and include a `BREAKING CHANGE:` footer:
 
 ```
 feat(cli)!: rename --config flag to --config-file
@@ -178,6 +190,25 @@ feat(cli)!: rename --config flag to --config-file
 BREAKING CHANGE: the --config flag has been renamed to --config-file.
 Update your scripts and aliases accordingly.
 ```
+
+Breaking changes map to the `type:breaking-change` label.
+
+---
+
+## Branch Naming
+
+Branch names **must** match this pattern:
+
+```
+^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)\/[a-z0-9._-]+$
+```
+
+**Rules:**
+- All lowercase
+- Use hyphens, dots, or underscores as separators (no spaces, no uppercase)
+- Description must be short and descriptive
+
+**Examples:** `feat/user-login`, `fix/crash-on-startup`, `docs/api-reference`, `ci/add-e2e-job`
 
 ---
 
