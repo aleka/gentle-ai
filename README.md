@@ -27,7 +27,7 @@
 <p>
 <a href="https://github.com/Gentleman-Programming/gentle-ai/releases"><img src="https://img.shields.io/github/v/release/Gentleman-Programming/gentle-ai" alt="Release"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-<img src="https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white" alt="Go 1.22+">
+<img src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white" alt="Go 1.24+">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
 </p>
 
@@ -99,7 +99,7 @@ brew tap Gentleman-Programming/homebrew-tap
 brew install gentle-ai
 ```
 
-### Go install (any platform with Go 1.22+)
+### Go install (any platform with Go 1.24+)
 
 ```bash
 go install github.com/gentleman-programming/gentle-ai/cmd/gentle-ai@latest
@@ -111,7 +111,7 @@ go install github.com/gentleman-programming/gentle-ai/cmd/gentle-ai@latest
 # Option 1: PowerShell installer (downloads binary from GitHub Releases)
 irm https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1 | iex
 
-# Option 2: Go install (requires Go 1.22+)
+# Option 2: Go install (requires Go 1.24+)
 go install github.com/gentleman-programming/gentle-ai/cmd/gentle-ai@latest
 ```
 
@@ -129,7 +129,7 @@ Download the binary for your platform from [GitHub Releases](https://github.com/
 | OpenCode | `opencode` | Yes | Yes | Yes | No | Yes | `~/.config/opencode` |
 | Gemini CLI | `gemini-cli` | Yes | Yes | Yes (experimental) | No | No | `~/.gemini` |
 | Cursor | `cursor` | Yes | Yes | Yes | No | No | `~/.cursor` |
-| VS Code Copilot | `vscode-copilot` | Yes | Yes | Yes | No | No | `~/.github` + VS Code User profile |
+| VS Code Copilot | `vscode-copilot` | Yes | Yes | Yes | No | No | `~/.copilot` + VS Code User profile |
 
 All agents receive the **full SDD orchestrator** (agent-teams-lite) injected into their system prompt, plus skill files written to their skills directory. Every agent supports sub-agent delegation natively, enabling the full SDD orchestration workflow with parallel sub-agents.
 
@@ -196,7 +196,6 @@ gga install
 |-------|-----|-------------|
 | Go Testing | `go-testing` | Go testing patterns including Bubbletea TUI testing |
 | Skill Creator | `skill-creator` | Create new AI agent skills following the Agent Skills spec |
-| Skill Registry | `skill-registry` | Create or update the skill registry for the current project (embedded, catalog registration pending) |
 
 These foundation skills are installed by default with both `full-gentleman` and `ecosystem-only` presets.
 
@@ -207,7 +206,7 @@ These foundation skills are installed by default with both `full-gentleman` and 
 | Preset | ID | What's Included |
 |--------|-----|-----------------|
 | Full Gentleman | `full-gentleman` | All components + all skills + gentleman persona |
-| Ecosystem Only | `ecosystem-only` | Core tools only: memory, SDD, skills & docs (no persona/security) |
+| Ecosystem Only | `ecosystem-only` | All components + P0 skills + gentleman persona |
 | Minimal | `minimal` | Engram + Persona + Permissions only |
 | Custom | `custom` | You pick components, skills, and persona individually |
 
@@ -351,12 +350,10 @@ internal/
   components/              Per-component install/inject logic
     engram/  sdd/  skills/  mcp/  persona/  theme/  permissions/  gga/
     filemerge/             Marker-based file merging (inject without clobbering)
-  agents/                  Agent adapters (config strategy per agent) -- 5 adapters
+  agents/                  Agent adapters (config strategy per agent)
     claude/  opencode/  gemini/  cursor/  vscode/
   verify/                  Post-apply health checks + reporting
-  update/                  Version check and self-update
-  opencode/                OpenCode-specific config helpers
-  tui/                     Bubbletea TUI (Rose Pine theme) -- 14 screens
+  tui/                     Bubbletea TUI (Rose Pine theme)
     styles/  screens/
 scripts/                   Installer scripts (bash + PowerShell)
 e2e/                       Docker-based E2E tests (Ubuntu + Arch)
@@ -383,8 +380,8 @@ gentle-ai.exe install --dry-run --agent claude-code --preset minimal
 
 Test coverage:
 
-- **27 test packages** across the codebase
-- **340+ test functions** covering all agent adapters, components, and system detection
+- **26 test packages** across the codebase
+- **260+ test functions** covering all agent adapters, components, and system detection
 - **78 E2E test functions** running in Docker containers (Ubuntu + Arch)
 - **17 golden files** for snapshot testing component output
 - Full pipeline tested: detection, planning, execution, backup, restore, verification
