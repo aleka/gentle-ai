@@ -14,7 +14,10 @@
         "read": true,
         "write": true,
         "edit": true,
-        "bash": true
+        "bash": true,
+        "delegate": true,
+        "delegation_read": true,
+        "delegation_list": true
       }
     },
     "sdd-init": {

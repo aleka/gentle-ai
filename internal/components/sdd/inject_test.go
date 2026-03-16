@@ -2,6 +2,7 @@ package sdd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
+	"github.com/gentleman-programming/gentle-ai/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	// agents/cursor, agents/gemini, agents/vscode used via agents.NewAdapter()
 )
@@ -1197,6 +1199,108 @@ func TestInjectClaudeDoesNotStripMarkedSection(t *testing.T) {
 	}
 	if second.Changed {
 		t.Fatal("second Inject() changed = true — marked section was incorrectly re-processed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Background-agents plugin tests (Step 4)
+// ---------------------------------------------------------------------------
+
+func TestInjectOpenCodeMultiWritesPlugin(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(multi) changed = false")
+	}
+
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "background-agents.ts")
+
+	// Assert: plugin file exists
+	content, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("ReadFile(background-agents.ts) error = %v", err)
+	}
+
+	// Assert: file content matches embedded asset
+	expected := assets.MustRead("opencode/plugins/background-agents.ts")
+	if string(content) != expected {
+		t.Fatalf("plugin content mismatch: got %d bytes, want %d bytes", len(content), len(expected))
+	}
+
+	// Assert: file is in InjectionResult.Files
+	found := false
+	for _, f := range result.Files {
+		if f == pluginPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("plugin path %q not reported in result.Files: %v", pluginPath, result.Files)
+	}
+}
+
+func TestInjectOpenCodeSingleDoesNotWritePlugin(t *testing.T) {
+	home := t.TempDir()
+
+	_, err := Inject(home, opencodeAdapter(), "single")
+	if err != nil {
+		t.Fatalf("Inject(single) error = %v", err)
+	}
+
+	pluginsDir := filepath.Join(home, ".config", "opencode", "plugins")
+	if _, err := os.Stat(pluginsDir); err == nil {
+		t.Fatal("plugins directory should NOT exist in single mode")
+	}
+}
+
+func TestInjectOpenCodePluginNpmNotFound(t *testing.T) {
+	orig := npmLookPath
+	npmLookPath = func(string) (string, error) {
+		return "", fmt.Errorf("npm not found")
+	}
+	defer func() { npmLookPath = orig }()
+
+	home := t.TempDir()
+
+	// Assert: inject succeeds even when npm is unavailable
+	result, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) with no npm error = %v", err)
+	}
+
+	// Assert: plugin file was still written
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "background-agents.ts")
+	if _, err := os.Stat(pluginPath); err != nil {
+		t.Fatalf("plugin file should exist even when npm unavailable: %v", err)
+	}
+
+	_ = result
+}
+
+func TestInjectOpenCodePluginIdempotent(t *testing.T) {
+	home := t.TempDir()
+
+	// First run
+	first, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) first error = %v", err)
+	}
+	if !first.Changed {
+		t.Fatal("Inject(multi) first changed = false")
+	}
+
+	// Second run: Changed should be false (plugin unchanged)
+	second, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) second error = %v", err)
+	}
+	if second.Changed {
+		t.Fatal("Inject(multi) second changed = true — plugin idempotency broken")
 	}
 }
 

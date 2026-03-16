@@ -72,6 +72,9 @@
       "prompt": "{file:./AGENTS.md}",
       "tools": {
         "bash": true,
+        "delegate": true,
+        "delegation_list": true,
+        "delegation_read": true,
         "edit": true,
         "read": true,
         "write": true

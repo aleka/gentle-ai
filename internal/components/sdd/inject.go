@@ -3,8 +3,10 @@ package sdd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +20,17 @@ type InjectionResult struct {
 	Changed bool
 	Files   []string
 }
+
+var (
+	npmLookPath = exec.LookPath
+	npmRun      = func(dir string, args ...string) error {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		return cmd.Run()
+	}
+)
 
 // overlayAssetPath returns the embedded asset path for the SDD agent overlay
 // based on the selected SDD mode. Empty or SDDModeSingle uses the single
@@ -117,6 +130,16 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 			}
 			changed = changed || agentResult.Changed
 			files = append(files, settingsPath)
+
+			// Install OpenCode plugins (multi-mode only).
+			if sddMode == model.SDDModeMulti {
+				pluginResult, err := installOpenCodePlugins(homeDir)
+				if err != nil {
+					return InjectionResult{}, err
+				}
+				changed = changed || pluginResult.Changed
+				files = append(files, pluginResult.Files...)
+			}
 		}
 	}
 
@@ -209,6 +232,39 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 					return InjectionResult{}, fmt.Errorf("post-check: SDD skill %q is too small (%d bytes) — content may be empty or corrupt", skill, info.Size())
 				}
 			}
+		}
+	}
+
+	return InjectionResult{Changed: changed, Files: files}, nil
+}
+
+// installOpenCodePlugins copies the background-agents plugin and installs its
+// npm dependency. Only called for OpenCode multi-mode.
+func installOpenCodePlugins(homeDir string) (InjectionResult, error) {
+	opencodeDir := filepath.Join(homeDir, ".config", "opencode")
+	pluginsDir := filepath.Join(opencodeDir, "plugins")
+
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return InjectionResult{}, fmt.Errorf("create plugins dir: %w", err)
+	}
+
+	content := assets.MustRead("opencode/plugins/background-agents.ts")
+	pluginPath := filepath.Join(pluginsDir, "background-agents.ts")
+
+	writeResult, err := filemerge.WriteFileAtomic(pluginPath, []byte(content), 0o644)
+	if err != nil {
+		return InjectionResult{}, fmt.Errorf("write plugin: %w", err)
+	}
+
+	files := []string{pluginPath}
+	changed := writeResult.Changed
+
+	// Install npm dependency — soft failure if npm unavailable
+	if _, err := npmLookPath("npm"); err == nil {
+		// Check if already installed to avoid unnecessary npm runs
+		nmPath := filepath.Join(opencodeDir, "node_modules", "unique-names-generator")
+		if _, statErr := os.Stat(nmPath); os.IsNotExist(statErr) {
+			_ = npmRun(opencodeDir, "npm", "install", "--save", "unique-names-generator")
 		}
 	}
 
