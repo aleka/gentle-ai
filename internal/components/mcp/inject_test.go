@@ -12,6 +12,15 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents/vscode"
 )
 
+func cursorAdapter(t *testing.T) agents.Adapter {
+	t.Helper()
+	adapter, err := agents.NewAdapter("cursor")
+	if err != nil {
+		t.Fatalf("NewAdapter(cursor) error = %v", err)
+	}
+	return adapter
+}
+
 func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
 func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
 
@@ -78,6 +87,44 @@ func TestInjectClaudeWritesContext7FileAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(home, ".claude", "mcp", "context7.json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected context7 file %q: %v", path, err)
+	}
+}
+
+func TestInjectCursorWithMalformedMCPJsonRecovery(t *testing.T) {
+	// Real Windows users may have a ~/.cursor/mcp.json that starts with non-JSON
+	// content (e.g. "allow: all" or just "a"). The installer should recover by
+	// treating the broken file as {} and proceeding with the overlay merge.
+	home := t.TempDir()
+	adapter := cursorAdapter(t)
+
+	// Pre-create ~/.cursor/mcp.json with invalid (non-JSON) content.
+	mcpPath := adapter.MCPConfigPath(home, "context7")
+	if err := os.MkdirAll(filepath.Dir(mcpPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+	if err := os.WriteFile(mcpPath, []byte("allow: all"), 0o644); err != nil {
+		t.Fatalf("WriteFile(malformed mcp.json) error = %v", err)
+	}
+
+	result, err := Inject(home, adapter)
+	if err != nil {
+		t.Fatalf("Inject(cursor) with malformed mcp.json error = %v; want nil (should recover)", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Inject(cursor) changed = false; want true")
+	}
+
+	content, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("ReadFile(mcp.json) error = %v", err)
+	}
+
+	text := string(content)
+	if !strings.Contains(text, `"mcpServers"`) {
+		t.Fatalf("mcp.json missing mcpServers key; got:\n%s", text)
+	}
+	if !strings.Contains(text, `"context7"`) {
+		t.Fatalf("mcp.json missing context7 server entry; got:\n%s", text)
 	}
 }
 
