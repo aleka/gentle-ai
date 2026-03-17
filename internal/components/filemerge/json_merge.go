@@ -9,7 +9,11 @@ import (
 func MergeJSONObjects(baseJSON []byte, overlayJSON []byte) ([]byte, error) {
 	base, err := unmarshalJSONObject(baseJSON)
 	if err != nil {
-		return nil, fmt.Errorf("unmarshal base json: %w", err)
+		// Real user machines may have a malformed or non-JSON mcp.json (e.g. a file
+		// that starts with "a" or contains arbitrary text). The installer backup step
+		// already snapshots the existing file before apply, so proceeding with an
+		// empty base is safe and far preferable to aborting the whole install.
+		base = map[string]any{}
 	}
 
 	overlay, err := unmarshalJSONObject(overlayJSON)
