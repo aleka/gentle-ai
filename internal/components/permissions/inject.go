@@ -20,9 +20,14 @@ var claudeCodeOverlayJSON = []byte(`{
   "permissions": {
     "defaultMode": "bypassPermissions",
     "deny": [
-      "rm -rf /",
-      "sudo rm -rf /",
-      ".env"
+      "Bash(rm -rf /)",
+      "Bash(sudo rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(sudo rm -rf ~)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Edit(.env)",
+      "Edit(.env.*)"
     ]
   }
 }
