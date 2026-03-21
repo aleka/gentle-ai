@@ -357,7 +357,7 @@ test_cc_engram_injection() {
         # MCP config
         assert_file_exists "$HOME/.claude/mcp/engram.json" "engram.json MCP config"
         assert_file_contains "$HOME/.claude/mcp/engram.json" '"command"' "engram.json has 'command' key"
-        assert_file_contains "$HOME/.claude/mcp/engram.json" '"engram"' "engram.json points to 'engram'"
+        assert_file_contains "$HOME/.claude/mcp/engram.json" 'engram' "engram.json command points to engram binary (absolute or relative)"
         assert_valid_json "$HOME/.claude/mcp/engram.json" "engram.json is valid JSON"
 
         # CLAUDE.md section
