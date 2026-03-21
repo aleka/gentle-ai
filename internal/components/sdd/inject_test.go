@@ -1302,28 +1302,107 @@ func TestInjectOpenCodeSingleWritesPlugin(t *testing.T) {
 	}
 }
 
-func TestInjectOpenCodePluginNpmNotFound(t *testing.T) {
+func TestInjectOpenCodePluginNoPkgManagerAvailable(t *testing.T) {
+	// Mock: no package manager (neither bun nor npm) is available.
 	orig := npmLookPath
 	npmLookPath = func(string) (string, error) {
-		return "", fmt.Errorf("npm not found")
+		return "", fmt.Errorf("not found")
 	}
 	defer func() { npmLookPath = orig }()
 
 	home := t.TempDir()
 
-	// Assert: inject succeeds even when npm is unavailable
+	// Assert: inject succeeds even when no package manager is available (soft skip).
 	result, err := Inject(home, opencodeAdapter(), "multi")
 	if err != nil {
-		t.Fatalf("Inject(multi) with no npm error = %v", err)
+		t.Fatalf("Inject(multi) with no package manager error = %v", err)
 	}
 
-	// Assert: plugin file was still written
+	// Assert: plugin file was still written regardless.
 	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "background-agents.ts")
 	if _, err := os.Stat(pluginPath); err != nil {
-		t.Fatalf("plugin file should exist even when npm unavailable: %v", err)
+		t.Fatalf("plugin file should exist even when no package manager available: %v", err)
 	}
 
 	_ = result
+}
+
+func TestInjectOpenCodePluginNpmFailureReturnsActionableError(t *testing.T) {
+	// Mock: package manager IS available but the install fails.
+	orig := npmLookPath
+	origRun := npmRun
+	npmLookPath = func(bin string) (string, error) {
+		if bin == "bun" {
+			return "", fmt.Errorf("not found")
+		}
+		if bin == "npm" {
+			return "/usr/bin/npm", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	npmRun = func(dir string, args ...string) ([]byte, error) {
+		return []byte("ERR! some npm error"), fmt.Errorf("exit status 1")
+	}
+	defer func() {
+		npmLookPath = orig
+		npmRun = origRun
+	}()
+
+	home := t.TempDir()
+
+	_, err := Inject(home, opencodeAdapter(), "multi")
+	if err == nil {
+		t.Fatal("Inject(multi) should fail when npm install fails")
+	}
+	if !strings.Contains(err.Error(), "npm install") {
+		t.Fatalf("error should mention 'npm install', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unique-names-generator") {
+		t.Fatalf("error should mention the package name, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Fix:") {
+		t.Fatalf("error should contain actionable fix instructions, got: %v", err)
+	}
+}
+
+func TestInjectOpenCodePluginBunPreferredOverNpm(t *testing.T) {
+	// Mock: both bun and npm available; only bun should be called.
+	orig := npmLookPath
+	origRun := npmRun
+
+	var calledWith string
+	npmLookPath = func(bin string) (string, error) {
+		// Both available — bun should win.
+		if bin == "bun" || bin == "npm" {
+			return "/usr/local/bin/" + bin, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	npmRun = func(dir string, args ...string) ([]byte, error) {
+		if len(args) > 0 {
+			calledWith = args[0]
+		}
+		// Simulate successful install by creating the node_modules directory.
+		nmPath := filepath.Join(dir, "node_modules", "unique-names-generator")
+		if err := os.MkdirAll(nmPath, 0o755); err != nil {
+			return nil, err
+		}
+		return []byte(""), nil
+	}
+	defer func() {
+		npmLookPath = orig
+		npmRun = origRun
+	}()
+
+	home := t.TempDir()
+	_, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) error = %v", err)
+	}
+
+	if !strings.Contains(calledWith, "bun") {
+		t.Fatalf("expected bun to be preferred over npm, but called: %q", calledWith)
+	}
 }
 
 func TestInjectOpenCodePluginIdempotent(t *testing.T) {
