@@ -1461,3 +1461,151 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 		t.Fatal("sdd-apply should not have model field when not in assignments")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Agent-specific SDD orchestrator asset selection tests
+// ---------------------------------------------------------------------------
+
+// TestSDDOrchestratorAssetSelection verifies that sddOrchestratorAsset()
+// returns agent-specific paths for Gemini and Codex, and falls back to generic
+// for all other agents.
+func TestSDDOrchestratorAssetSelection(t *testing.T) {
+	tests := []struct {
+		agent model.AgentID
+		want  string
+	}{
+		{agent: model.AgentGeminiCLI, want: "gemini/sdd-orchestrator.md"},
+		{agent: model.AgentCodex, want: "codex/sdd-orchestrator.md"},
+		{agent: model.AgentClaudeCode, want: "generic/sdd-orchestrator.md"},
+		{agent: model.AgentOpenCode, want: "generic/sdd-orchestrator.md"},
+		{agent: model.AgentCursor, want: "generic/sdd-orchestrator.md"},
+		{agent: model.AgentVSCodeCopilot, want: "generic/sdd-orchestrator.md"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.agent), func(t *testing.T) {
+			got := sddOrchestratorAsset(tt.agent)
+			if got != tt.want {
+				t.Fatalf("sddOrchestratorAsset(%q) = %q, want %q", tt.agent, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestInjectGeminiUsesAgentSpecificAsset verifies that Gemini injection uses
+// the gemini-specific sdd-orchestrator asset (with ~/.gemini/skills/ paths),
+// not the generic one with wrong vendor paths.
+func TestInjectGeminiUsesAgentSpecificAsset(t *testing.T) {
+	home := t.TempDir()
+
+	geminiAdapter, err := agents.NewAdapter("gemini-cli")
+	if err != nil {
+		t.Fatalf("NewAdapter(gemini-cli) error = %v", err)
+	}
+
+	result, injectErr := Inject(home, geminiAdapter, "")
+	if injectErr != nil {
+		t.Fatalf("Inject(gemini) error = %v", injectErr)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(gemini) changed = false")
+	}
+
+	promptPath := filepath.Join(home, ".gemini", "GEMINI.md")
+	content, readErr := os.ReadFile(promptPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q) error = %v", promptPath, readErr)
+	}
+
+	text := string(content)
+
+	// Gemini-specific asset must reference Gemini skill paths.
+	if !strings.Contains(text, "~/.gemini/skills/_shared/") {
+		t.Fatal("GEMINI.md missing ~/.gemini/skills/_shared/ path — agent-specific asset not used")
+	}
+
+	// Gemini-specific asset must NOT reference Codex paths.
+	if strings.Contains(text, "~/.codex/") {
+		t.Fatal("GEMINI.md contains Codex-specific paths — wrong asset was injected")
+	}
+}
+
+// TestInjectCodexWritesSDDOrchestratorAndSkills verifies that Codex injection
+// creates agents.md with the SDD orchestrator and writes skill files.
+func TestInjectCodexWritesSDDOrchestratorAndSkills(t *testing.T) {
+	home := t.TempDir()
+
+	codexAdapter, err := agents.NewAdapter("codex")
+	if err != nil {
+		t.Fatalf("NewAdapter(codex) error = %v", err)
+	}
+
+	result, injectErr := Inject(home, codexAdapter, "")
+	if injectErr != nil {
+		t.Fatalf("Inject(codex) error = %v", injectErr)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(codex) changed = false")
+	}
+
+	// Verify SDD orchestrator was injected into agents.md.
+	promptPath := filepath.Join(home, ".codex", "agents.md")
+	content, readErr := os.ReadFile(promptPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q) error = %v", promptPath, readErr)
+	}
+
+	text := string(content)
+	if !strings.Contains(text, "Spec-Driven Development") {
+		t.Fatal("agents.md missing SDD orchestrator content")
+	}
+
+	// Codex-specific asset must reference Codex skill paths.
+	if !strings.Contains(text, "~/.codex/skills/_shared/") {
+		t.Fatal("agents.md missing ~/.codex/skills/_shared/ path — agent-specific asset not used")
+	}
+
+	// Codex-specific asset must NOT reference Gemini paths.
+	if strings.Contains(text, "~/.gemini/") {
+		t.Fatal("agents.md contains Gemini-specific paths — wrong asset was injected")
+	}
+
+	// Should also write SDD skill files.
+	skillPath := filepath.Join(home, ".codex", "skills", "sdd-init", "SKILL.md")
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("expected SDD skill file %q: %v", skillPath, err)
+	}
+
+	// Shared files should also be written.
+	sharedPath := filepath.Join(home, ".codex", "skills", "_shared", "engram-convention.md")
+	if _, err := os.Stat(sharedPath); err != nil {
+		t.Fatalf("expected shared SDD convention file %q: %v", sharedPath, err)
+	}
+}
+
+// TestInjectCodexIsIdempotent verifies that injecting Codex twice does not
+// duplicate the SDD orchestrator content.
+func TestInjectCodexIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+
+	codexAdapter, err := agents.NewAdapter("codex")
+	if err != nil {
+		t.Fatalf("NewAdapter(codex) error = %v", err)
+	}
+
+	first, err := Inject(home, codexAdapter, "")
+	if err != nil {
+		t.Fatalf("Inject(codex) first error = %v", err)
+	}
+	if !first.Changed {
+		t.Fatal("first Inject(codex) changed = false")
+	}
+
+	second, err := Inject(home, codexAdapter, "")
+	if err != nil {
+		t.Fatalf("Inject(codex) second error = %v", err)
+	}
+	if second.Changed {
+		t.Fatal("second Inject(codex) changed = true — SDD orchestrator was duplicated")
+	}
+}

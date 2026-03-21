@@ -8,6 +8,7 @@ const (
 	AgentGeminiCLI     AgentID = "gemini-cli"
 	AgentCursor        AgentID = "cursor"
 	AgentVSCodeCopilot AgentID = "vscode-copilot"
+	AgentCodex         AgentID = "codex"
 )
 
 // SupportTier indicates how fully an agent supports the Gentleman AI ecosystem.
@@ -93,6 +94,8 @@ const (
 	StrategyMergeIntoSettings
 	// StrategyMCPConfigFile writes to a dedicated mcp.json config file (e.g., Cursor ~/.cursor/mcp.json).
 	StrategyMCPConfigFile
+	// StrategyTOMLFile writes MCP config to a TOML file (e.g., Codex ~/.codex/config.toml).
+	StrategyTOMLFile
 )
 
 type PresetID string

@@ -15,17 +15,21 @@ type InjectionResult struct {
 	Files   []string
 }
 
-// defaultEngramServerJSON is the MCP server config for separate-file strategy.
-var defaultEngramServerJSON = []byte("{\n  \"command\": \"engram\",\n  \"args\": [\"mcp\"]\n}\n")
+// defaultEngramServerJSON is the MCP server config for separate-file strategy (Claude Code).
+// Uses --tools=agent per engram contract.
+var defaultEngramServerJSON = []byte("{\n  \"command\": \"engram\",\n  \"args\": [\"mcp\", \"--tools=agent\"]\n}\n")
 
 // defaultEngramOverlayJSON is the settings.json overlay for merge strategy (Gemini, etc.).
-var defaultEngramOverlayJSON = []byte("{\n  \"mcpServers\": {\n    \"engram\": {\n      \"command\": \"engram\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n")
+// Uses --tools=agent per engram contract.
+var defaultEngramOverlayJSON = []byte("{\n  \"mcpServers\": {\n    \"engram\": {\n      \"command\": \"engram\",\n      \"args\": [\"mcp\", \"--tools=agent\"]\n    }\n  }\n}\n")
 
 // openCodeEngramOverlayJSON is the opencode.json overlay using the new MCP format.
-var openCodeEngramOverlayJSON = []byte("{\n  \"mcp\": {\n    \"engram\": {\n      \"command\": [\"engram\", \"mcp\"],\n      \"enabled\": true,\n      \"type\": \"local\"\n    }\n  }\n}\n")
+// Uses --tools=agent in the command array per engram contract.
+var openCodeEngramOverlayJSON = []byte("{\n  \"mcp\": {\n    \"engram\": {\n      \"command\": [\"engram\", \"mcp\", \"--tools=agent\"],\n      \"enabled\": true,\n      \"type\": \"local\"\n    }\n  }\n}\n")
 
 // vsCodeEngramOverlayJSON is the VS Code mcp.json overlay using the "servers" key.
-var vsCodeEngramOverlayJSON = []byte("{\n  \"servers\": {\n    \"engram\": {\n      \"command\": \"engram\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n")
+// Uses --tools=agent per engram contract.
+var vsCodeEngramOverlayJSON = []byte("{\n  \"servers\": {\n    \"engram\": {\n      \"command\": \"engram\",\n      \"args\": [\"mcp\", \"--tools=agent\"]\n    }\n  }\n}\n")
 
 func Inject(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	if !adapter.SupportsMCP() {
@@ -78,6 +82,38 @@ func Inject(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 		}
 		changed = changed || mcpWrite.Changed
 		files = append(files, mcpPath)
+
+	case model.StrategyTOMLFile:
+		// Codex: upsert [mcp_servers.engram] block and instruction-file keys
+		// in ~/.codex/config.toml, then write instruction files.
+		// All TOML mutations are composed in a single pass before writing to
+		// ensure idempotency (no intermediate states that differ on re-run).
+		configPath := adapter.MCPConfigPath(homeDir, "engram")
+		if configPath == "" {
+			break
+		}
+
+		// Determine instruction file paths before mutating the config.
+		instructionsPath, compactPath, instrErr := writeCodexInstructionFiles(homeDir)
+		if instrErr != nil {
+			return InjectionResult{}, instrErr
+		}
+
+		// Read existing config and apply all mutations in one pass.
+		existing, err := readFileOrEmpty(configPath)
+		if err != nil {
+			return InjectionResult{}, err
+		}
+		withMCP := filemerge.UpsertCodexEngramBlock(existing)
+		withInstr := filemerge.UpsertTopLevelTOMLString(withMCP, "model_instructions_file", instructionsPath)
+		withCompact := filemerge.UpsertTopLevelTOMLString(withInstr, "experimental_compact_prompt_file", compactPath)
+
+		tomlWrite, err := filemerge.WriteFileAtomic(configPath, []byte(withCompact), 0o644)
+		if err != nil {
+			return InjectionResult{}, err
+		}
+		changed = changed || tomlWrite.Changed
+		files = append(files, configPath)
 	}
 
 	// 2. Inject Engram memory protocol into system prompt (if supported).
@@ -122,6 +158,30 @@ func Inject(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	}
 
 	return InjectionResult{Changed: changed, Files: files}, nil
+}
+
+// writeCodexInstructionFiles writes the Engram memory protocol and compact prompt
+// files to ~/.codex/ and returns their paths.
+func writeCodexInstructionFiles(homeDir string) (instructionsPath, compactPath string, err error) {
+	codexDir := homeDir + "/.codex"
+	instructionsPath = codexDir + "/engram-instructions.md"
+	compactPath = codexDir + "/engram-compact-prompt.md"
+
+	instrContent := assets.MustRead("codex/engram-instructions.md")
+	instrWrite, err := filemerge.WriteFileAtomic(instructionsPath, []byte(instrContent), 0o644)
+	if err != nil {
+		return "", "", fmt.Errorf("write codex engram-instructions.md: %w", err)
+	}
+	_ = instrWrite
+
+	compactContent := assets.MustRead("codex/engram-compact-prompt.md")
+	compactWrite, err := filemerge.WriteFileAtomic(compactPath, []byte(compactContent), 0o644)
+	if err != nil {
+		return "", "", fmt.Errorf("write codex engram-compact-prompt.md: %w", err)
+	}
+	_ = compactWrite
+
+	return instructionsPath, compactPath, nil
 }
 
 func mergeJSONFile(path string, overlay []byte) (filemerge.WriteResult, error) {

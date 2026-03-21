@@ -93,6 +93,20 @@ func TestComponentPathsSDDIncludesSkillsAndSharedConventions(t *testing.T) {
 	}
 }
 
+// TestComponentPathsEngramCodexIncludesConfigTOML verifies that componentPaths
+// for ComponentEngram + Codex reports ~/.codex/config.toml as a backup target.
+func TestComponentPathsEngramCodexIncludesConfigTOML(t *testing.T) {
+	home := t.TempDir()
+	adapters := resolveAdapters([]model.AgentID{model.AgentCodex})
+
+	paths := componentPaths(home, model.Selection{}, adapters, model.ComponentEngram)
+
+	want := home + "/.codex/config.toml"
+	if !containsPath(paths, want) {
+		t.Fatalf("componentPaths(engram,codex) missing %q\npaths=%v", want, paths)
+	}
+}
+
 func containsPath(paths []string, want string) bool {
 	for _, p := range paths {
 		if p == want {

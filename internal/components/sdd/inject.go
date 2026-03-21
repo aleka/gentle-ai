@@ -420,6 +420,19 @@ func hasSDDOrchestrator(content string) bool {
 	return false
 }
 
+// sddOrchestratorAsset returns the embedded asset path for the SDD orchestrator
+// content based on the agent. Agent-specific assets take priority; generic is fallback.
+func sddOrchestratorAsset(agent model.AgentID) string {
+	switch agent {
+	case model.AgentGeminiCLI:
+		return "gemini/sdd-orchestrator.md"
+	case model.AgentCodex:
+		return "codex/sdd-orchestrator.md"
+	default:
+		return "generic/sdd-orchestrator.md"
+	}
+}
+
 func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	promptPath := adapter.SystemPromptFile(homeDir)
 
@@ -438,8 +451,8 @@ func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, 
 		existing = instructionsFrontmatter
 	}
 
-	// Use generic SDD orchestrator content suitable for any agent.
-	content := assets.MustRead("generic/sdd-orchestrator.md")
+	// Use agent-specific SDD orchestrator content when available; fall back to generic.
+	content := assets.MustRead(sddOrchestratorAsset(adapter.Agent()))
 
 	updated := existing
 	if len(updated) > 0 && !strings.HasSuffix(updated, "\n") {

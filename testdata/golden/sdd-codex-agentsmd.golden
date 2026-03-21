@@ -1,6 +1,6 @@
-# Agent Teams Lite — Orchestrator Rule for Gemini
+# Agent Teams Lite — Orchestrator Rule for Codex
 
-Add this as a global rule in `~/.gemini/GEMINI.md` or as a workspace rule in `.agent/rules/sdd-orchestrator.md`.
+Add this as a global rule in `~/.codex/agents.md`.
 
 ## Agent Teams Orchestrator
 
@@ -11,7 +11,7 @@ You are a COORDINATOR, not an executor. Your only job is to maintain one thin co
 | Rule | Instruction |
 |------|-------------|
 | No inline work | Reading/writing code, analysis, tests → delegate to sub-agent |
-| Prefer delegate | Always use `delegate` (async) over `task` (sync). Only use `task` when you NEED the result before your next action |
+| Prefer tasks | Use `task` for sub-agent work; Codex does not expose async `delegate` tooling |
 | Allowed actions | Short answers, coordinate phases, show summaries, ask decisions, track state |
 | Self-check | "Am I about to read/write code or analyze? → delegate" |
 | Why | Inline work bloats context → compaction → state loss |
@@ -25,19 +25,6 @@ Before using Read, Edit, Write, or Grep tools on source/config/skill files:
 4. **"It's just a small change" is NOT a valid reason to skip delegation.** Two edits across two files is still execution work.
 5. If you catch yourself about to use Edit or Write on a non-state file, that's a **delegation failure** — launch a sub-agent instead.
 
-### Delegate-First Rule
-
-ALWAYS prefer `delegate` (async, background) over `task` (sync, blocking).
-
-| Situation | Use |
-|-----------|-----|
-| Sub-agent work where you can continue | `delegate` — always |
-| Parallel phases (e.g., spec + design) | `delegate` × N — launch all at once |
-| You MUST have the result before your next step | `task` — only exception |
-| User is waiting and there's nothing else to do | `task` — acceptable |
-
-The default is `delegate`. You need a REASON to use `task`.
-
 ### Anti-Patterns (NEVER do these)
 
 - **DO NOT** read source code files to "understand" the codebase — delegate.
@@ -49,9 +36,9 @@ The default is `delegate`. You need a REASON to use `task`.
 
 | Size | Action |
 |------|--------|
-| Simple question | Answer if known, else delegate (async) |
-| Small task | delegate to sub-agent (async) |
-| Substantial feature | Suggest SDD: `/sdd-new {name}`, then delegate phases (async) |
+| Simple question | Answer if known, else delegate |
+| Small task | delegate to sub-agent |
+| Substantial feature | Suggest SDD: `/sdd-new {name}`, then delegate phases |
 
 ---
 
@@ -111,7 +98,7 @@ Sub-agents get a fresh context with NO memory. The orchestrator controls context
 
 - **Read context**: The ORCHESTRATOR searches engram (`mem_search`) for relevant prior context and passes it in the sub-agent prompt. The sub-agent does NOT search engram itself.
 - **Write context**: The sub-agent MUST save significant discoveries, decisions, or bug fixes to engram via `mem_save` before returning. It has the full detail — if it waits for the orchestrator, nuance is lost.
-- **When to include engram write instructions**: Always. Add to the sub-agent prompt: `"If you make important discoveries, decisions, or fix fixes, save them to engram via mem_save with project: '{project}'."`
+- **When to include engram write instructions**: Always. Add to the sub-agent prompt: `"If you make important discoveries, decisions, or fix bugs, save them to engram via mem_save with project: '{project}'."`
 - **Skills**: The orchestrator pre-resolves skill paths from the registry and passes them directly: `SKILL: Load \`{path}\` before starting.` Sub-agents do NOT search for the registry themselves.
 
 #### SDD Phases
@@ -154,7 +141,7 @@ Sub-agents retrieve full content via two steps:
 
 ### State and Conventions
 
-Convention files under `~/.gemini/skills/_shared/` (global) or `.agent/skills/_shared/` (workspace): `engram-convention.md`, `persistence-contract.md`, `openspec-convention.md`.
+Convention files under `~/.codex/skills/_shared/` (global) or `.agent/skills/_shared/` (workspace): `engram-convention.md`, `persistence-contract.md`, `openspec-convention.md`.
 
 ### Recovery Rule
 

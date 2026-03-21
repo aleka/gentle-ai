@@ -10,6 +10,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
+	codexagent "github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/cursor"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/gemini"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
@@ -30,6 +31,7 @@ func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
 func cursorAdapter() agents.Adapter   { return cursor.NewAdapter() }
 func geminiAdapter() agents.Adapter   { return gemini.NewAdapter() }
 func vscodeAdapter() agents.Adapter   { return vscode.NewAdapter() }
+func codexAdapter() agents.Adapter    { return codexagent.NewAdapter() }
 
 // ---------------------------------------------------------------------------
 // Existing golden tests (context7, presets, SDD command)
@@ -250,6 +252,39 @@ func TestGoldenSDD_VSCode(t *testing.T) {
 		"sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-verify",
 	}
 	skillsDir := filepath.Join(home, ".copilot", "skills")
+	for _, name := range expectedSkills {
+		path := filepath.Join(skillsDir, name, "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected SDD skill file %q not found: %v", name, err)
+		}
+	}
+}
+
+func TestGoldenSDD_Codex(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := sdd.Inject(home, codexAdapter(), "")
+	if err != nil {
+		t.Fatalf("sdd.Inject(codex) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("sdd.Inject(codex) changed = false")
+	}
+
+	// Codex writes SDD orchestrator to ~/.codex/agents.md.
+	agentsMD := readTestFile(t, filepath.Join(home, ".codex", "agents.md"))
+	assertGolden(t, "sdd-codex-agentsmd.golden", agentsMD)
+
+	// Golden-check a representative SDD skill file.
+	skillInit := readTestFile(t, filepath.Join(home, ".codex", "skills", "sdd-init", "SKILL.md"))
+	assertGolden(t, "sdd-codex-skill-sdd-init.golden", skillInit)
+
+	// Verify ALL expected SDD skill files exist.
+	expectedSkills := []string{
+		"sdd-init", "sdd-apply", "sdd-archive", "sdd-explore",
+		"sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-verify",
+	}
+	skillsDir := filepath.Join(home, ".codex", "skills")
 	for _, name := range expectedSkills {
 		path := filepath.Join(skillsDir, name, "SKILL.md")
 		if _, err := os.Stat(path); err != nil {
