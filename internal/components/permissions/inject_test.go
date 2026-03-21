@@ -96,7 +96,7 @@ func TestInjectAddsEnvToDenyList(t *testing.T) {
 	}
 
 	for _, entry := range denyList {
-		if value, ok := entry.(string); ok && value == ".env" {
+		if value, ok := entry.(string); ok && value == "Read(.env)" {
 			return
 		}
 	}

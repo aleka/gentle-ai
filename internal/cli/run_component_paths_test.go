@@ -56,15 +56,15 @@ func TestComponentPathsSDDMultiIncludesOpenCodePlugin(t *testing.T) {
 	}
 }
 
-func TestComponentPathsSDDSingleExcludesOpenCodePlugin(t *testing.T) {
+func TestComponentPathsSDDSingleIncludesOpenCodePlugin(t *testing.T) {
 	home := t.TempDir()
 	adapters := resolveAdapters([]model.AgentID{model.AgentOpenCode})
 
 	paths := componentPaths(home, model.Selection{SDDMode: model.SDDModeSingle}, adapters, model.ComponentSDD)
 
 	plugin := filepath.Join(home, ".config", "opencode", "plugins", "background-agents.ts")
-	if containsPath(paths, plugin) {
-		t.Fatalf("componentPaths(sdd single) unexpectedly included OpenCode plugin path %q\npaths=%v", plugin, paths)
+	if !containsPath(paths, plugin) {
+		t.Fatalf("componentPaths(sdd single) missing OpenCode plugin path %q\npaths=%v", plugin, paths)
 	}
 }
 
