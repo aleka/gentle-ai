@@ -1515,7 +1515,8 @@ test_oc_sdd_single_mode_no_subagents() {
         assert_file_contains "$settings" '"sdd-orchestrator"' "Has sdd-orchestrator agent"
         assert_file_not_contains "$settings" '"sdd-apply"' "Single mode: no sdd-apply sub-agent"
         assert_file_not_contains "$settings" '"subagent"' "Single mode: no subagent mode entries"
-        assert_file_not_exists "$HOME/.config/opencode/plugins/background-agents.ts" "Single mode: no background-agents plugin"
+        assert_file_exists "$HOME/.config/opencode/plugins/background-agents.ts" "Single mode: background-agents plugin present"
+        assert_file_contains "$HOME/.config/opencode/plugins/background-agents.ts" 'background-agents' "Single mode: plugin has expected content marker"
     else
         log_fail "OpenCode SDD single-mode install command failed"
     fi
@@ -1530,7 +1531,8 @@ test_oc_sdd_default_mode_same_as_single() {
         assert_file_exists "$settings" "opencode.json exists"
         assert_file_contains "$settings" '"sdd-orchestrator"' "Has sdd-orchestrator"
         assert_file_not_contains "$settings" '"sdd-apply"' "Default mode: no sdd-apply sub-agent"
-        assert_file_not_exists "$HOME/.config/opencode/plugins/background-agents.ts" "Default mode: no background-agents plugin"
+        assert_file_exists "$HOME/.config/opencode/plugins/background-agents.ts" "Default mode: background-agents plugin present"
+        assert_file_contains "$HOME/.config/opencode/plugins/background-agents.ts" 'background-agents' "Default mode: plugin has expected content marker"
     else
         log_fail "OpenCode SDD default mode install command failed"
     fi
