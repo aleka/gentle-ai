@@ -3,7 +3,6 @@ package sdd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -23,12 +22,12 @@ type InjectionResult struct {
 
 var (
 	npmLookPath = exec.LookPath
-	npmRun      = func(dir string, args ...string) error {
+	npmRun      = func(dir string, args ...string) ([]byte, error) {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		return cmd.Run()
+		// CombinedOutput captures stdout+stderr so we can surface actionable
+		// error messages on failure. Do not set Stdout/Stderr separately.
+		return cmd.CombinedOutput()
 	}
 )
 
@@ -237,7 +236,9 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 }
 
 // installOpenCodePlugins copies the background-agents plugin and installs its
-// npm dependency. Only called for OpenCode multi-mode.
+// npm/bun dependency into ~/.config/opencode/. Returns an error with an
+// actionable message if the package manager is present but the install fails.
+// If no package manager is available, the install is skipped (soft failure).
 func installOpenCodePlugins(homeDir string) (InjectionResult, error) {
 	opencodeDir := filepath.Join(homeDir, ".config", "opencode")
 	pluginsDir := filepath.Join(opencodeDir, "plugins")
@@ -257,16 +258,73 @@ func installOpenCodePlugins(homeDir string) (InjectionResult, error) {
 	files := []string{pluginPath}
 	changed := writeResult.Changed
 
-	// Install npm dependency — soft failure if npm unavailable
-	if _, err := npmLookPath("npm"); err == nil {
-		// Check if already installed to avoid unnecessary npm runs
-		nmPath := filepath.Join(opencodeDir, "node_modules", "unique-names-generator")
+	// Install dependency — prefer bun (OpenCode uses it), fall back to npm.
+	// If neither is available, skip with a soft no-op (npm/bun not installed).
+	// If a package manager IS found and the install fails, surface the error.
+	depPkg := "unique-names-generator"
+	nmPath := filepath.Join(opencodeDir, "node_modules", depPkg)
+
+	// Only run the install if the package is not already present.
+	pkgMissing := false
+	pkgMgrRan := false
+	if _, statErr := os.Stat(nmPath); os.IsNotExist(statErr) {
+		pkgMissing = true
+		var installErr error
+		pkgMgrRan, installErr = runPkgInstall(opencodeDir, depPkg)
+		if installErr != nil {
+			return InjectionResult{}, installErr
+		}
+	}
+
+	// Post-install validation: if a package manager ran and claimed success,
+	// confirm the package actually landed on disk.
+	if pkgMissing && pkgMgrRan {
 		if _, statErr := os.Stat(nmPath); os.IsNotExist(statErr) {
-			_ = npmRun(opencodeDir, "npm", "install", "--save", "unique-names-generator")
+			// Package manager reported success but the package still isn't there.
+			// This is unusual (e.g. bun wrote to a different location). Surface it.
+			return InjectionResult{}, fmt.Errorf(
+				"post-install check: %q was not found after install in %q — "+
+					"the background-agents plugin will fail to load.\n"+
+					"Fix: run `cd %s && bun add %s` (or npm install %s) manually",
+				depPkg, nmPath, opencodeDir, depPkg, depPkg,
+			)
 		}
 	}
 
 	return InjectionResult{Changed: changed, Files: files}, nil
+}
+
+// runPkgInstall installs a node package in the given directory using bun (if
+// available) or npm. Returns (true, nil) on success, (false, nil) if no
+// package manager is found (soft skip), or (true, error) with a descriptive,
+// actionable message if a package manager was found but the install failed.
+func runPkgInstall(dir, pkg string) (ran bool, err error) {
+	// Prefer bun — OpenCode ships with bun.lock and recommends bun.
+	if bunPath, lookErr := npmLookPath("bun"); lookErr == nil {
+		out, runErr := npmRun(dir, bunPath, "add", pkg)
+		if runErr != nil {
+			return true, fmt.Errorf(
+				"bun add %s failed in %s: %w\nOutput: %s\nFix: run `cd %s && bun add %s` manually",
+				pkg, dir, runErr, strings.TrimSpace(string(out)), dir, pkg,
+			)
+		}
+		return true, nil
+	}
+
+	// Fall back to npm.
+	if npmPath, lookErr := npmLookPath("npm"); lookErr == nil {
+		out, runErr := npmRun(dir, npmPath, "install", "--save", pkg)
+		if runErr != nil {
+			return true, fmt.Errorf(
+				"npm install %s failed in %s: %w\nOutput: %s\nFix: run `cd %s && npm install %s` manually",
+				pkg, dir, runErr, strings.TrimSpace(string(out)), dir, pkg,
+			)
+		}
+		return true, nil
+	}
+
+	// No package manager available — soft skip.
+	return false, nil
 }
 
 func mergeJSONFile(path string, overlay []byte) (filemerge.WriteResult, error) {
