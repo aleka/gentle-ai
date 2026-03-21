@@ -210,8 +210,8 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 			if !strings.Contains(settingsText, `"sdd-orchestrator"`) {
 				return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-orchestrator agent definition — OpenCode /sdd-* commands will fail", settingsPath)
 			}
-			if !strings.Contains(settingsText, `"sdd-apply"`) {
-				return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-apply sub-agent — overlay was not injected correctly", settingsPath)
+			if sddMode == model.SDDModeMulti && !strings.Contains(settingsText, `"sdd-apply"`) {
+				return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-apply sub-agent — multi-mode overlay was not injected correctly", settingsPath)
 			}
 		}
 	}

@@ -3,7 +3,8 @@
     "engram": {
       "command": [
         "engram",
-        "mcp"
+        "mcp",
+        "--tools=agent"
       ],
       "enabled": true,
       "type": "local"

@@ -1,4 +1,4 @@
 {
   "command": "engram",
-  "args": ["mcp"]
+  "args": ["mcp", "--tools=agent"]
 }
