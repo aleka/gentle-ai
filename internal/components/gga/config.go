@@ -53,6 +53,8 @@ func ProviderForAgents(agentIDs []model.AgentID) string {
 		return "opencode"
 	case has[model.AgentGeminiCLI]:
 		return "gemini"
+	case has[model.AgentCodex]:
+		return "codex"
 	default:
 		return "claude"
 	}

@@ -45,6 +45,9 @@ func SetupAgentSlug(agent model.AgentID) (string, bool) {
 		return "claude-code", true
 	case model.AgentGeminiCLI:
 		return "gemini-cli", true
+	case model.AgentCodex:
+		// Codex slug registered for future MCP support; ShouldAttemptSetup gates on SupportsMCP().
+		return "codex", true
 	default:
 		return "", false
 	}

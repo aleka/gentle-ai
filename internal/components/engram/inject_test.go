@@ -8,12 +8,30 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/gemini"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/vscode"
 )
 
 func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
 func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
+func codexAdapter() agents.Adapter    { return codex.NewAdapter() }
+func geminiAdapter() agents.Adapter   { return gemini.NewAdapter() }
+
+// assertArgsHaveToolsAgent is a shared helper that validates a JSON file
+// contains the MCP "engram" entry with --tools=agent in args.
+func assertArgsHaveToolsAgent(t *testing.T, path string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	text := string(content)
+	if !strings.Contains(text, `"--tools=agent"`) {
+		t.Fatalf("file %q missing --tools=agent in args; got:\n%s", path, text)
+	}
+}
 
 func TestInjectClaudeWritesMCPConfig(t *testing.T) {
 	home := t.TempDir()
@@ -40,6 +58,8 @@ func TestInjectClaudeWritesMCPConfig(t *testing.T) {
 	if !strings.Contains(text, `"args"`) {
 		t.Fatal("engram.json missing args field")
 	}
+	// RED: must include --tools=agent
+	assertArgsHaveToolsAgent(t, mcpPath)
 }
 
 func TestInjectClaudeWritesProtocolSection(t *testing.T) {
@@ -123,6 +143,10 @@ func TestInjectOpenCodeMergesEngramToSettings(t *testing.T) {
 	}
 	if !strings.Contains(text, `"type": "local"`) {
 		t.Fatal("opencode.json engram missing type: local")
+	}
+	// RED: OpenCode overlay must include --tools=agent (via command array)
+	if !strings.Contains(text, `"--tools=agent"`) {
+		t.Fatal("opencode.json missing --tools=agent in command array")
 	}
 
 	// Verify NO plugin files or plugin arrays exist.
@@ -260,5 +284,158 @@ func TestInjectVSCodeMergesEngramToMCPConfigFile(t *testing.T) {
 	}
 	if strings.Contains(text, `"mcpServers"`) {
 		t.Fatal("mcp.json should use 'servers' key, not 'mcpServers'")
+	}
+	// RED: VS Code overlay must include --tools=agent
+	assertArgsHaveToolsAgent(t, mcpPath)
+}
+
+// ─── Gemini tests ─────────────────────────────────────────────────────────────
+
+func TestInjectGeminiToolsFlagPresent(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := Inject(home, geminiAdapter())
+	if err != nil {
+		t.Fatalf("Inject(gemini) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Inject(gemini) changed = false")
+	}
+
+	settingsPath := filepath.Join(home, ".gemini", "settings.json")
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(settings.json) error = %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, `"mcpServers"`) {
+		t.Fatal("settings.json missing mcpServers key")
+	}
+	if !strings.Contains(text, `"engram"`) {
+		t.Fatal("settings.json missing engram entry")
+	}
+	// RED: Gemini overlay must use --tools=agent
+	if !strings.Contains(text, `"--tools=agent"`) {
+		t.Fatal("settings.json missing --tools=agent in args")
+	}
+}
+
+// ─── Codex tests ──────────────────────────────────────────────────────────────
+
+func TestInjectCodexWritesTOMLMCP(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject(codex) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Inject(codex) changed = false")
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml) error = %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "[mcp_servers.engram]") {
+		t.Fatalf("config.toml missing [mcp_servers.engram] block; got:\n%s", text)
+	}
+	if !strings.Contains(text, `command = "engram"`) {
+		t.Fatalf("config.toml missing command = \"engram\"; got:\n%s", text)
+	}
+	if !strings.Contains(text, `"--tools=agent"`) {
+		t.Fatalf("config.toml missing --tools=agent; got:\n%s", text)
+	}
+}
+
+func TestInjectCodexWritesInstructionFiles(t *testing.T) {
+	home := t.TempDir()
+
+	_, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject(codex) error = %v", err)
+	}
+
+	instructionsPath := filepath.Join(home, ".codex", "engram-instructions.md")
+	content, err := os.ReadFile(instructionsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(engram-instructions.md) error = %v", err)
+	}
+	if !strings.Contains(string(content), "mem_save") {
+		t.Fatal("engram-instructions.md missing expected content (mem_save)")
+	}
+
+	compactPath := filepath.Join(home, ".codex", "engram-compact-prompt.md")
+	compactContent, err := os.ReadFile(compactPath)
+	if err != nil {
+		t.Fatalf("ReadFile(engram-compact-prompt.md) error = %v", err)
+	}
+	if !strings.Contains(string(compactContent), "FIRST ACTION REQUIRED") {
+		t.Fatal("engram-compact-prompt.md missing expected content (FIRST ACTION REQUIRED)")
+	}
+}
+
+func TestInjectCodexInjectsTOMLKeys(t *testing.T) {
+	home := t.TempDir()
+
+	_, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject(codex) error = %v", err)
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml) error = %v", err)
+	}
+	text := string(content)
+
+	instructionsPath := filepath.Join(home, ".codex", "engram-instructions.md")
+	if !strings.Contains(text, `model_instructions_file`) {
+		t.Fatalf("config.toml missing model_instructions_file key; got:\n%s", text)
+	}
+	if !strings.Contains(text, instructionsPath) {
+		t.Fatalf("config.toml model_instructions_file does not reference %q; got:\n%s", instructionsPath, text)
+	}
+
+	compactPath := filepath.Join(home, ".codex", "engram-compact-prompt.md")
+	if !strings.Contains(text, `experimental_compact_prompt_file`) {
+		t.Fatalf("config.toml missing experimental_compact_prompt_file key; got:\n%s", text)
+	}
+	if !strings.Contains(text, compactPath) {
+		t.Fatalf("config.toml experimental_compact_prompt_file does not reference %q; got:\n%s", compactPath, text)
+	}
+}
+
+func TestInjectCodexIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+
+	first, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject(codex) first error = %v", err)
+	}
+	if !first.Changed {
+		t.Fatalf("Inject(codex) first changed = false")
+	}
+
+	second, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject(codex) second error = %v", err)
+	}
+	if second.Changed {
+		t.Fatalf("Inject(codex) second changed = true (should be idempotent)")
+	}
+
+	// Verify only one [mcp_servers.engram] block.
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml) error = %v", err)
+	}
+	count := strings.Count(string(content), "[mcp_servers.engram]")
+	if count != 1 {
+		t.Fatalf("config.toml has %d [mcp_servers.engram] blocks, want exactly 1; got:\n%s", count, string(content))
 	}
 }

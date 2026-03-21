@@ -9,6 +9,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/cursor"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/gemini"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
@@ -20,6 +21,7 @@ func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
 func geminiAdapter() agents.Adapter   { return gemini.NewAdapter() }
 func cursorAdapter() agents.Adapter   { return cursor.NewAdapter() }
 func vscodeAdapter() agents.Adapter   { return vscode.NewAdapter() }
+func codexAdapter() agents.Adapter    { return codex.NewAdapter() }
 
 func TestInjectOpenCodeIsIdempotent(t *testing.T) {
 	home := t.TempDir()
@@ -266,5 +268,20 @@ func TestInjectCursorSkipsPermissions(t *testing.T) {
 	}
 	if len(result.Files) != 0 {
 		t.Fatalf("Inject() for Cursor should return no files, got %v", result.Files)
+	}
+}
+
+func TestInjectCodexSkipsPermissions(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if result.Changed {
+		t.Fatal("Inject() for Codex should not change anything (no known settings.json path)")
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("Inject() for Codex should return no files, got %v", result.Files)
 	}
 }

@@ -1046,6 +1046,73 @@ test_idempotent_engram_claude() {
     fi
 }
 
+# ─── Gemini parity tests ─────────────────────────────────────────────────────
+
+test_gemini_engram_tools_flag() {
+    log_test "Gemini: engram injection uses --tools=agent"
+    cleanup_test_env
+
+    if $BINARY install --agent gemini-cli --component engram --persona neutral 2>&1; then
+        local settings="$HOME/.gemini/settings.json"
+        assert_file_exists "$settings" "Gemini settings.json"
+        assert_file_contains "$settings" '"mcpServers"' "Has mcpServers key"
+        assert_file_contains "$settings" '"engram"' "Has engram entry"
+        assert_file_contains "$settings" '"--tools=agent"' "Engram args include --tools=agent"
+        assert_valid_json "$settings" "settings.json is valid JSON"
+    else
+        log_fail "Gemini engram install command failed"
+    fi
+}
+
+# ─── Codex parity tests ───────────────────────────────────────────────────────
+
+test_codex_engram_injection() {
+    log_test "Codex: engram injection writes config.toml + instruction files"
+    cleanup_test_env
+
+    if $BINARY install --agent codex --component engram --persona neutral 2>&1; then
+        local config_toml="$HOME/.codex/config.toml"
+        local instructions="$HOME/.codex/engram-instructions.md"
+        local compact="$HOME/.codex/engram-compact-prompt.md"
+
+        assert_file_exists "$config_toml" "Codex config.toml"
+        assert_file_contains "$config_toml" '[mcp_servers.engram]' "config.toml has [mcp_servers.engram]"
+        assert_file_contains "$config_toml" 'command = "engram"' "config.toml has correct command"
+        assert_file_contains "$config_toml" '"--tools=agent"' "config.toml has --tools=agent"
+        assert_file_contains "$config_toml" 'model_instructions_file' "config.toml references instruction file"
+        assert_file_contains "$config_toml" 'experimental_compact_prompt_file' "config.toml references compact prompt"
+
+        assert_file_exists "$instructions" "engram-instructions.md"
+        assert_file_contains "$instructions" 'mem_save' "Instructions have memory protocol content"
+
+        assert_file_exists "$compact" "engram-compact-prompt.md"
+        assert_file_contains "$compact" 'FIRST ACTION REQUIRED' "Compact prompt has required sentinel"
+    else
+        log_fail "Codex engram install command failed"
+    fi
+}
+
+test_codex_engram_idempotent() {
+    log_test "Codex: engram injection is idempotent (no duplicate blocks)"
+    cleanup_test_env
+
+    $BINARY install --agent codex --component engram --persona neutral 2>&1 || true
+    $BINARY install --agent codex --component engram --persona neutral 2>&1 || true
+
+    local config_toml="$HOME/.codex/config.toml"
+    if [ -f "$config_toml" ]; then
+        local count
+        count=$(grep -c '\[mcp_servers\.engram\]' "$config_toml" || true)
+        if [ "$count" -ne 1 ]; then
+            log_fail "config.toml has $count [mcp_servers.engram] blocks after 2 runs (want exactly 1)"
+        else
+            log_pass "config.toml has exactly 1 [mcp_servers.engram] block after 2 runs"
+        fi
+    else
+        log_fail "config.toml not found after 2 runs"
+    fi
+}
+
 test_idempotent_skills_claude() {
     log_test "Idempotency: skills injection produces same files"
     cleanup_test_env
@@ -1696,6 +1763,11 @@ if [ "${RUN_FULL_E2E:-0}" = "1" ]; then
     test_idempotent_skills_claude
     test_idempotent_theme_opencode
     test_idempotent_full_claude
+
+    # Category 6b: Gemini/Codex engram parity
+    test_gemini_engram_tools_flag
+    test_codex_engram_injection
+    test_codex_engram_idempotent
 
     # Category 8: Edge cases
     test_edge_theme_not_in_presets
