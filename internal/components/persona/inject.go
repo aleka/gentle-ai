@@ -3,6 +3,8 @@ package persona
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/assets"
@@ -52,7 +54,13 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 			return InjectionResult{}, err
 		}
 
-		updated := filemerge.InjectMarkdownSection(existing, "persona", content)
+		// Auto-heal: strip any legacy free-text Gentleman persona block that was
+		// written before the marker-based injection system existed. This prevents
+		// duplicate persona content when users re-run the installer after an old
+		// install placed the persona as raw text above the <!-- gentle-ai: --> markers.
+		healed := filemerge.StripLegacyPersonaBlock(existing)
+
+		updated := filemerge.InjectMarkdownSection(healed, "persona", content)
 
 		writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
 		if err != nil {
@@ -72,6 +80,19 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 
 	case model.StrategyInstructionsFile:
 		promptPath := adapter.SystemPromptFile(homeDir)
+
+		// Auto-heal: remove any stale Gentleman persona content left at the
+		// old VSCode path (~/.github/copilot-instructions.md) that was written
+		// by an older installer version.  VS Code still reads that path for
+		// global instructions, so the two files would conflict.
+		if cleaned, cleanErr := cleanLegacyVSCodePersona(homeDir); cleanErr == nil && cleaned {
+			changed = true
+		}
+
+		// Write the new instructions file (with YAML frontmatter) to the current path.
+		// WriteFileAtomic compares bytes, so it is naturally idempotent: it rewrites
+		// whenever the on-disk content differs from instructionsContent, which covers
+		// the case where an older install wrote persona content without frontmatter.
 		instructionsContent := wrapInstructionsFile(content)
 		writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(instructionsContent), 0o644)
 		if err != nil {
@@ -199,4 +220,66 @@ func wrapInstructionsFile(content string) string {
 		"---\n\n"
 
 	return frontmatter + content
+}
+
+// isLegacyUnwrappedPersona reports whether content looks like a Gentleman persona
+// file that was written without YAML frontmatter by an older installer version.
+// It returns true when the content carries known persona fingerprints but does NOT
+// start with the YAML front-matter block ("---\n").
+func isLegacyUnwrappedPersona(content string) bool {
+	if strings.HasPrefix(content, "---\n") {
+		// Already has YAML frontmatter — not a legacy file.
+		return false
+	}
+	// Must contain at least one characteristic persona fingerprint.
+	personaFingerprints := []string{
+		"## Personality",
+		"Senior Architect",
+	}
+	for _, fp := range personaFingerprints {
+		if strings.Contains(content, fp) {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyVSCodePersonaPaths returns the old VS Code persona file paths that may
+// contain stale Gentleman persona content from older installer versions.
+// These paths are no longer written by the current installer but may still
+// be read by VS Code, causing conflicting instructions.
+func legacyVSCodePersonaPaths(homeDir string) []string {
+	return []string{
+		// v1 path: wrote raw persona to ~/.github/copilot-instructions.md
+		filepath.Join(homeDir, ".github", "copilot-instructions.md"),
+	}
+}
+
+// cleanLegacyVSCodePersona removes Gentleman persona content from any old VS Code
+// persona file paths that are no longer written by the current installer.
+// Only files that contain clear Gentleman persona fingerprints are removed —
+// files with user-written content are left untouched.
+// Returns true if at least one file was cleaned.
+func cleanLegacyVSCodePersona(homeDir string) (bool, error) {
+	cleaned := false
+	for _, oldPath := range legacyVSCodePersonaPaths(homeDir) {
+		data, err := os.ReadFile(oldPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return cleaned, fmt.Errorf("read legacy vscode persona %q: %w", oldPath, err)
+		}
+
+		if !isLegacyUnwrappedPersona(string(data)) {
+			// File exists but doesn't look like a Gentleman persona — leave it alone.
+			continue
+		}
+
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			return cleaned, fmt.Errorf("remove legacy vscode persona %q: %w", oldPath, err)
+		}
+		cleaned = true
+	}
+	return cleaned, nil
 }
