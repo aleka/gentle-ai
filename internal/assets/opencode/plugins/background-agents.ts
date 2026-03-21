@@ -840,17 +840,16 @@ ${description}
       // Always send the completed delegation notification first
       const progressNote =
         remainingCount > 0
-          ? `
-**${remainingCount} delegation${remainingCount === 1 ? "" : "s"} still in progress.** You WILL be notified when ALL complete.
-❌ Do NOT poll \`delegation_list\` - continue productive work.`
+          ? `\n${remainingCount} delegation${remainingCount === 1 ? "" : "s"} still in progress. You WILL be notified when ALL complete. Do NOT poll delegation_list.`
           : ""
-      const completionNotification = `<task-notification>
-<task-id>${delegation.id}</task-id>
-<status>${statusText}</status>
-<summary>Agent "${title}" ${statusText}</summary>
-<result>${result}</result>
-${delegation.error ? `\n<error>${delegation.error}</error>` : ""}
-</task-notification>${progressNote}`
+      const completionNotification = `[TASK NOTIFICATION]
+ID: ${delegation.id}
+Status: ${statusText}
+Agent: ${title}${delegation.error ? `\nError: ${delegation.error}` : ""}${progressNote}
+
+Result:
+
+${result}`
 
       await this.client.session.prompt({
         path: { id: delegation.parentSessionID },
@@ -863,10 +862,7 @@ ${delegation.error ? `\n<error>${delegation.error}</error>` : ""}
 
       // If all delegations complete, send a minimal completion notice that triggers response
       if (allComplete) {
-        const allCompleteNotification = `<task-notification>
-<status>completed</status>
-<summary>All delegations complete.</summary>
-</task-notification>`
+        const allCompleteNotification = `[TASK NOTIFICATION] All delegations complete.`
 
         await this.client.session.prompt({
           path: { id: delegation.parentSessionID },
@@ -1299,7 +1295,7 @@ function formatDelegationContext(
 
     // Only include reminder when there ARE running delegations
     sections.push(
-      "> **Note:** You WILL be notified via `<task-notification>` when delegations complete.",
+      "> **Note:** You WILL be notified via a **Task Notification** blockquote when delegations complete.",
     )
     sections.push("> Do NOT poll `delegation_list` - continue productive work.")
     sections.push("")
