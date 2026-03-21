@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
+	"github.com/gentleman-programming/gentle-ai/internal/installcmd"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 )
 
@@ -147,6 +148,29 @@ func (r *commandRecorder) get() []string {
 	return cp
 }
 
+// setupValidGoEnvInInstallcmd overrides the installcmd package-level vars to simulate a valid
+// Go 1.24+ environment. It registers restores via t.Cleanup.
+//
+// Without this, integration tests that invoke resolveEngramInstall() on Linux/Windows
+// profiles will call the real `go version` binary — which fails the Go >= 1.24 preflight in
+// CI environments that ship an older Go (e.g. Docker images pinned to Go 1.22).
+//
+// Note: installcmd.cmdLookPath and cli.cmdLookPath are INDEPENDENT package-level vars.
+// This helper only overrides the installcmd ones; cli.cmdLookPath must be overridden separately.
+func setupValidGoEnvInInstallcmd(t *testing.T) {
+	t.Helper()
+	t.Cleanup(installcmd.OverrideGoVersion(func() ([]byte, error) {
+		return []byte("go version go1.24.0 linux/amd64"), nil
+	}))
+	t.Cleanup(installcmd.OverrideLookPath(func(name string) (string, error) {
+		if name == "go" {
+			return "/usr/local/bin/go", nil
+		}
+		return "", exec.ErrNotFound
+	}))
+	t.Cleanup(installcmd.OverrideGetenv(func(string) string { return "" }))
+}
+
 func TestRunInstallLinuxUbuntuResolvesAptCommands(t *testing.T) {
 	home := t.TempDir()
 	restoreHome := osUserHomeDir
@@ -234,6 +258,8 @@ func TestRunInstallLinuxUbuntuWithEngramResolvesGoInstallCommand(t *testing.T) {
 	cmdLookPath = missingBinaryLookPath
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
+	// Isolate installcmd Go preflight from the real go binary on the test runner.
+	setupValidGoEnvInInstallcmd(t)
 
 	detection := linuxDetectionResult(system.LinuxDistroUbuntu, "apt")
 	result, err := RunInstall(
@@ -277,6 +303,8 @@ func TestRunInstallLinuxArchWithEngramResolvesGoInstallCommand(t *testing.T) {
 	cmdLookPath = missingBinaryLookPath
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
+	// Isolate installcmd Go preflight from the real go binary on the test runner.
+	setupValidGoEnvInInstallcmd(t)
 
 	detection := linuxDetectionResult(system.LinuxDistroArch, "pacman")
 	result, err := RunInstall(
@@ -325,6 +353,8 @@ func TestRunInstallLinuxRollsBackOnComponentFailure(t *testing.T) {
 		cmdLookPath = restoreLookPath
 	})
 	cmdLookPath = missingBinaryLookPath
+	// Isolate installcmd Go preflight from the real go binary on the test runner.
+	setupValidGoEnvInInstallcmd(t)
 
 	osUserHomeDir = func() (string, error) { return home, nil }
 	runCommand = func(name string, args ...string) error {
@@ -985,12 +1015,17 @@ func TestRunInstallEngramAutoInstallsGoWhenMissing(t *testing.T) {
 	})
 
 	osUserHomeDir = func() (string, error) { return home, nil }
-	// Simulate: engram missing, Go missing.
+	// Simulate: engram missing, Go missing (in the cli package LookPath).
+	// Note: installcmd.cmdLookPath is a separate var — we mock it below to satisfy
+	// the Go >= 1.24 preflight that runs inside resolveEngramInstall.
 	cmdLookPath = func(string) (string, error) {
 		return "", exec.ErrNotFound
 	}
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
+	// Isolate installcmd Go preflight from the real go binary on the test runner.
+	// installcmd.cmdLookPath (for "go") and cli.cmdLookPath are independent variables.
+	setupValidGoEnvInInstallcmd(t)
 
 	detection := linuxDetectionResult(system.LinuxDistroUbuntu, "apt")
 	result, err := RunInstall(
@@ -1048,6 +1083,8 @@ func TestRunInstallEngramSkipsGoInstallWhenGoPresent(t *testing.T) {
 	cmdLookPath = missingBinaryLookPath
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
+	// Isolate installcmd Go preflight from the real go binary on the test runner.
+	setupValidGoEnvInInstallcmd(t)
 
 	detection := linuxDetectionResult(system.LinuxDistroUbuntu, "apt")
 	result, err := RunInstall(
