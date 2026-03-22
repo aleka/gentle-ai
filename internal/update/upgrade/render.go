@@ -62,6 +62,9 @@ func RenderUpgradeReport(report UpgradeReport) string {
 	if report.BackupID != "" {
 		fmt.Fprintf(&b, "  Config backup: %s\n", report.BackupID)
 	}
+	if report.BackupWarning != "" {
+		fmt.Fprintf(&b, "  WARNING: %s\n", report.BackupWarning)
+	}
 
 	if report.DryRun {
 		fmt.Fprintf(&b, "  %d upgrade(s) pending. Run without --dry-run to apply.\n", len(report.Results))

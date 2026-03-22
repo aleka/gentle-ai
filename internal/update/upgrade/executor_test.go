@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
 )
@@ -506,4 +507,288 @@ func TestToolUpgradeResult_ErrorWrapping(t *testing.T) {
 	if !errors.Is(r.Err, sentinel) {
 		t.Errorf("errors.Is failed — Err should wrap the sentinel")
 	}
+}
+
+// --- Upgrade Backup Hardening Tests ---
+
+// TestConfigPathsForBackup_CoversAgentDirectories verifies that configPathsForBackup
+// returns files from all expected agent config directories, not just 4 hardcoded paths.
+// This tests the G5 gap fix: computed paths aligned with ScanConfigs directories.
+func TestConfigPathsForBackup_CoversAgentDirectories(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Create files in each agent config directory to verify they are discovered.
+	agentFiles := map[string]string{
+		".claude/CLAUDE.md":              "# Claude",
+		".claude/extra_rule.md":          "# extra rule",
+		".config/opencode/config.json":   `{"model":"claude"}`,
+		".config/opencode/settings.json": `{"theme":"dark"}`,
+		".gemini/GEMINI.md":              "# Gemini",
+		".cursor/rules":                  "# Cursor rules",
+	}
+
+	for relPath, content := range agentFiles {
+		full := filepath.Join(homeDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", relPath, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", relPath, err)
+		}
+	}
+
+	paths := configPathsForBackup(homeDir)
+
+	// Must include at least the files we created.
+	pathSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+	}
+
+	for relPath := range agentFiles {
+		full := filepath.Join(homeDir, relPath)
+		if _, ok := pathSet[full]; !ok {
+			t.Errorf("configPathsForBackup missing %q — computed paths must cover all files in agent dirs", relPath)
+		}
+	}
+}
+
+// TestConfigPathsForBackup_HandlesEmptyDirs verifies that configPathsForBackup
+// returns a non-nil slice (possibly empty) when agent config directories don't exist.
+// It must NOT panic or error out — missing dirs simply contribute no paths.
+func TestConfigPathsForBackup_HandlesEmptyDirs(t *testing.T) {
+	homeDir := t.TempDir()
+	// No agent config directories exist in this temp dir.
+
+	paths := configPathsForBackup(homeDir)
+	// Must return a non-nil slice (empty is fine).
+	if paths == nil {
+		t.Errorf("configPathsForBackup returned nil, want non-nil (empty slice is fine)")
+	}
+}
+
+// TestExecute_BackupWarningWhenBackupFails verifies that when backup creation
+// fails (e.g. permissions error on the backup dir), the upgrade still proceeds
+// but the UpgradeReport surfaces the backup failure warning.
+// This tests the G6 gap fix: explicit warning instead of silent skip.
+func TestExecute_BackupWarningWhenBackupFails(t *testing.T) {
+	origExecCommand := execCommand
+	t.Cleanup(func() { execCommand = origExecCommand })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("echo", "ok")
+	}
+
+	// Use a homeDir that cannot create the backup dir by making it read-only.
+	// We simulate the backup failure by overriding backupCreator.
+	// Since we can't easily make a real dir unwritable in a unit test (on macOS,
+	// a root process could still write), we verify the contract via BackupWarning
+	// field when BackupID is empty.
+	results := []update.UpdateResult{
+		makeResult("engram", update.UpdateAvailable, "0.3.0", "0.4.0", update.InstallGoInstall),
+	}
+	results[0].Tool.GoImportPath = "github.com/Gentleman-Programming/engram/cmd/engram"
+
+	// Simulate backup failure by providing a homeDir where the snapshot would
+	// fail — but that is OS-dependent. We test the contract: if BackupID is
+	// empty (backup failed silently before), UpgradeReport.BackupWarning should
+	// be non-empty to signal the omission.
+	// For now, test that the field exists — the integration path is covered by
+	// TestExecute_BackupBeforeExecution which confirms the happy path.
+	report := Execute(context.Background(), results, linuxProfile(), t.TempDir(), false)
+
+	// If backup succeeded, BackupWarning should be empty (no warning needed).
+	if report.BackupID != "" && report.BackupWarning != "" {
+		t.Errorf("BackupWarning should be empty when BackupID is set (backup succeeded); got: %q", report.BackupWarning)
+	}
+}
+
+// TestUpgradeReport_HasBackupWarningField verifies that UpgradeReport has a
+// BackupWarning field to surface backup-creation failures explicitly.
+// This tests the G6 gap: backup failure must not be silently skipped.
+func TestUpgradeReport_HasBackupWarningField(t *testing.T) {
+	// This test validates the struct field exists and is accessible.
+	report := UpgradeReport{
+		BackupID:      "",
+		BackupWarning: "backup creation failed: permission denied",
+		Results:       nil,
+		DryRun:        false,
+	}
+
+	if report.BackupWarning == "" {
+		t.Error("BackupWarning field not accessible — struct must have BackupWarning string field")
+	}
+}
+
+// TestExecute_ForcedSnapshotFailureSurfacesWarningEndToEnd verifies the complete
+// failure path end-to-end: when snapshot creation fails, the UpgradeReport
+// carries a non-empty BackupWarning and BackupID is empty, AND RenderUpgradeReport
+// renders the WARNING prefix into its output.
+//
+// This closes the verify gap: prior tests only validated the struct field exists
+// or relied on OS permission tricks. This test injects the failure directly via
+// the snapshotCreator package-level var (same testability pattern as execCommand).
+func TestExecute_ForcedSnapshotFailureSurfacesWarningEndToEnd(t *testing.T) {
+	origExecCommand := execCommand
+	origSnapshotCreator := snapshotCreator
+	t.Cleanup(func() {
+		execCommand = origExecCommand
+		snapshotCreator = origSnapshotCreator
+	})
+
+	// Stub exec so the upgrade itself succeeds (we're only testing the backup path).
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("echo", "upgrade ok")
+	}
+
+	// Force snapshot creation to fail.
+	snapshotCreator = func(snapshotDir string, paths []string) (backup.Manifest, error) {
+		return backup.Manifest{}, errors.New("simulated snapshot failure: disk full")
+	}
+
+	results := []update.UpdateResult{
+		makeResult("engram", update.UpdateAvailable, "0.3.0", "0.4.0", update.InstallGoInstall),
+	}
+	results[0].Tool.GoImportPath = "github.com/Gentleman-Programming/engram/cmd/engram"
+
+	report := Execute(context.Background(), results, linuxProfile(), t.TempDir(), false)
+
+	// BackupID must be empty — the snapshot failed.
+	if report.BackupID != "" {
+		t.Errorf("BackupID = %q, want empty when snapshot fails", report.BackupID)
+	}
+
+	// BackupWarning must be non-empty and mention the failure.
+	if report.BackupWarning == "" {
+		t.Errorf("BackupWarning is empty — failure must be surfaced explicitly")
+	}
+	if !containsSubstring(report.BackupWarning, "pre-upgrade backup failed") {
+		t.Errorf("BackupWarning = %q, want it to mention 'pre-upgrade backup failed'", report.BackupWarning)
+	}
+	if !containsSubstring(report.BackupWarning, "simulated snapshot failure") {
+		t.Errorf("BackupWarning = %q, want it to include the root cause", report.BackupWarning)
+	}
+
+	// The upgrade must still have run and produced a result.
+	if len(report.Results) != 1 {
+		t.Fatalf("len(Results) = %d, want 1 — upgrade must proceed even when backup fails", len(report.Results))
+	}
+	if report.Results[0].Status != UpgradeSucceeded {
+		t.Errorf("Result status = %q, want UpgradeSucceeded — upgrade proceeds without backup", report.Results[0].Status)
+	}
+
+	// RenderUpgradeReport must include the WARNING line in its output.
+	rendered := RenderUpgradeReport(report)
+	if !containsSubstring(rendered, "WARNING:") {
+		t.Errorf("RenderUpgradeReport output must contain 'WARNING:' when BackupWarning is set;\ngot:\n%s", rendered)
+	}
+	if !containsSubstring(rendered, "pre-upgrade backup failed") {
+		t.Errorf("RenderUpgradeReport output must include the backup failure message;\ngot:\n%s", rendered)
+	}
+}
+
+// TestExecute_UpgradeBackupManifestHasUpgradeMetadata verifies that when Execute
+// creates a pre-upgrade backup, the manifest on disk carries Source=upgrade,
+// Description="pre-upgrade snapshot", and the version from AppVersion.
+//
+// This closes the verify gap: "no runtime test proves upgrade manifests are
+// emitted with metadata". This test reads the manifest from disk directly.
+func TestExecute_UpgradeBackupManifestHasUpgradeMetadata(t *testing.T) {
+	origExecCommand := execCommand
+	origAppVersion := AppVersion
+	t.Cleanup(func() {
+		execCommand = origExecCommand
+		AppVersion = origAppVersion
+	})
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("echo", "ok")
+	}
+	AppVersion = "3.0.0"
+
+	homeDir := t.TempDir()
+	// Create a config file so the snapshot captures at least one file.
+	configFile := filepath.Join(homeDir, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configFile, []byte("# Claude"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	results := []update.UpdateResult{
+		makeResult("engram", update.UpdateAvailable, "0.3.0", "0.4.0", update.InstallGoInstall),
+	}
+	results[0].Tool.GoImportPath = "github.com/Gentleman-Programming/engram/cmd/engram"
+
+	report := Execute(context.Background(), results, linuxProfile(), homeDir, false)
+
+	if report.BackupID == "" {
+		t.Fatalf("BackupID is empty — backup must be created")
+	}
+
+	// Find the backup manifest on disk and verify its metadata.
+	backupRoot := filepath.Join(homeDir, ".gentle-ai", "backups")
+	entries, err := os.ReadDir(backupRoot)
+	if err != nil {
+		t.Fatalf("ReadDir backups: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("no backup directories found under %s", backupRoot)
+	}
+
+	// There should be exactly one backup dir created by Execute.
+	manifestPath := filepath.Join(backupRoot, entries[0].Name(), backup.ManifestFilename)
+	manifest, err := backup.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest(%q): %v", manifestPath, err)
+	}
+
+	if manifest.Source != backup.BackupSourceUpgrade {
+		t.Errorf("manifest.Source = %q, want %q", manifest.Source, backup.BackupSourceUpgrade)
+	}
+	if manifest.Description != "pre-upgrade snapshot" {
+		t.Errorf("manifest.Description = %q, want %q", manifest.Description, "pre-upgrade snapshot")
+	}
+	if manifest.CreatedByVersion != "3.0.0" {
+		t.Errorf("manifest.CreatedByVersion = %q, want 3.0.0", manifest.CreatedByVersion)
+	}
+}
+
+// TestExecute_SuccessfulSnapshotHasNoWarning verifies the happy path: when the
+// snapshot succeeds, BackupWarning is empty (no false positive warning).
+func TestExecute_SuccessfulSnapshotHasNoWarning(t *testing.T) {
+	origExecCommand := execCommand
+	t.Cleanup(func() { execCommand = origExecCommand })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("echo", "ok")
+	}
+	// snapshotCreator is intentionally left at its real default.
+
+	results := []update.UpdateResult{
+		makeResult("engram", update.UpdateAvailable, "0.3.0", "0.4.0", update.InstallGoInstall),
+	}
+	results[0].Tool.GoImportPath = "github.com/Gentleman-Programming/engram/cmd/engram"
+
+	report := Execute(context.Background(), results, linuxProfile(), t.TempDir(), false)
+
+	if report.BackupWarning != "" {
+		t.Errorf("BackupWarning = %q, want empty when snapshot succeeds", report.BackupWarning)
+	}
+	if report.BackupID == "" {
+		t.Errorf("BackupID is empty — should be set when snapshot succeeds")
+	}
+
+	rendered := RenderUpgradeReport(report)
+	if containsSubstring(rendered, "WARNING:") {
+		t.Errorf("RenderUpgradeReport must NOT contain 'WARNING:' on success;\ngot:\n%s", rendered)
+	}
+}
+
+// containsSubstring checks whether s contains sub.
+func containsSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

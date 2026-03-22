@@ -64,6 +64,10 @@ type ExecuteFunc func(
 // RestoreFunc restores a backup from a manifest.
 type RestoreFunc func(manifest backup.Manifest) error
 
+// ListBackupsFn returns the current list of available backups.
+// When nil, the backup list is not refreshed after restore.
+type ListBackupsFn func() []backup.Manifest
+
 type Screen int
 
 const (
@@ -80,6 +84,8 @@ const (
 	ScreenModelPicker
 	ScreenComplete
 	ScreenBackups
+	ScreenRestoreConfirm
+	ScreenRestoreResult
 )
 
 type Model struct {
@@ -101,12 +107,24 @@ type Model struct {
 	ModelPicker    screens.ModelPickerState
 	Err            error
 
+	// SelectedBackup holds the manifest chosen on ScreenBackups, used by the
+	// restore confirmation and result screens.
+	SelectedBackup backup.Manifest
+
+	// RestoreErr holds the error from the most recent restore attempt.
+	// Nil on success, non-nil on failure. Displayed on ScreenRestoreResult.
+	RestoreErr error
+
 	// ExecuteFn is called to run the real pipeline. When nil, the installing
 	// screen falls back to manual step-through (useful for tests/development).
 	ExecuteFn ExecuteFunc
 
 	// RestoreFn is called to restore a backup. When nil, restore is a no-op.
 	RestoreFn RestoreFunc
+
+	// ListBackupsFn refreshes the backup list (e.g. after a restore).
+	// When nil, the backup list is not refreshed automatically.
+	ListBackupsFn ListBackupsFn
 
 	// UpdateResults holds the results of the background update check.
 	UpdateResults []update.UpdateResult
@@ -238,12 +256,10 @@ func (m Model) handlePipelineDone(msg PipelineDoneMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleBackupRestore(msg BackupRestoreMsg) (tea.Model, tea.Cmd) {
-	if msg.Err != nil {
-		m.Err = msg.Err
-		m.Progress.AppendLog("restore failed: %s", msg.Err.Error())
-	} else {
-		m.Progress.AppendLog("backup restored successfully")
-	}
+	m.RestoreErr = msg.Err
+	// Navigate to the result screen regardless of success or failure.
+	// The result screen shows success or the error message.
+	m.setScreen(ScreenRestoreResult)
 	return m, nil
 }
 
@@ -294,6 +310,10 @@ func (m Model) View() string {
 		})
 	case ScreenBackups:
 		return screens.RenderBackups(m.Backups, m.Cursor)
+	case ScreenRestoreConfirm:
+		return screens.RenderRestoreConfirm(m.SelectedBackup, m.Cursor)
+	case ScreenRestoreResult:
+		return screens.RenderRestoreResult(m.SelectedBackup, m.RestoreErr)
 	default:
 		return ""
 	}
@@ -479,9 +499,25 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case ScreenBackups:
 		if m.Cursor < len(m.Backups) {
-			return m.restoreBackup(m.Backups[m.Cursor])
+			// Navigate to confirmation screen instead of immediately restoring.
+			m.SelectedBackup = m.Backups[m.Cursor]
+			m.setScreen(ScreenRestoreConfirm)
+			return m, nil
 		}
 		m.setScreen(ScreenWelcome)
+	case ScreenRestoreConfirm:
+		// Cursor 0 = "Restore", Cursor 1 = "Cancel".
+		if m.Cursor == 0 {
+			return m.restoreBackup(m.SelectedBackup)
+		}
+		m.setScreen(ScreenBackups)
+	case ScreenRestoreResult:
+		// Enter on the result screen returns to backup selection.
+		// Refresh the backup list to reflect any changes from the restore.
+		if m.ListBackupsFn != nil {
+			m.Backups = m.ListBackupsFn()
+		}
+		m.setScreen(ScreenBackups)
 	}
 
 	return m, nil
@@ -628,6 +664,10 @@ func (m Model) optionCount() int {
 		return 1
 	case ScreenBackups:
 		return len(m.Backups) + 1
+	case ScreenRestoreConfirm:
+		return 2 // "Restore" + "Cancel"
+	case ScreenRestoreResult:
+		return 1 // "Done" / continue
 	default:
 		return 0
 	}

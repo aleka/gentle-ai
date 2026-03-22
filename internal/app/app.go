@@ -29,6 +29,11 @@ func Run() error {
 }
 
 func RunArgs(args []string, stdout io.Writer) error {
+	// Propagate the build-time version to the CLI and upgrade layers so backup
+	// manifests record which version of gentle-ai created them.
+	cli.AppVersion = Version
+	upgrade.AppVersion = Version
+
 	if err := system.EnsureCurrentOSSupported(); err != nil {
 		return err
 	}
@@ -46,6 +51,7 @@ func RunArgs(args []string, stdout io.Writer) error {
 		m := tui.NewModel(result, Version)
 		m.ExecuteFn = tuiExecute
 		m.RestoreFn = tuiRestore
+		m.ListBackupsFn = ListBackups
 		m.Backups = ListBackups()
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		_, err := p.Run()
@@ -84,6 +90,8 @@ func RunArgs(args []string, stdout io.Writer) error {
 
 		_, _ = fmt.Fprintln(stdout, cli.RenderSyncReport(syncResult))
 		return nil
+	case "restore":
+		return cli.RunRestore(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

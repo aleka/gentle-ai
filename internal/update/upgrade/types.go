@@ -54,6 +54,12 @@ type UpgradeReport struct {
 	// BackupID is the snapshot ID created before upgrade execution.
 	// Empty when no upgrades were executed (nothing to back up).
 	BackupID string
-	Results  []ToolUpgradeResult
-	DryRun   bool
+
+	// BackupWarning is set when backup creation was attempted but failed.
+	// A non-empty value means the upgrade ran without a pre-execution backup.
+	// This surfaces the G6 gap: backup failures are no longer silently skipped.
+	BackupWarning string
+
+	Results []ToolUpgradeResult
+	DryRun  bool
 }
