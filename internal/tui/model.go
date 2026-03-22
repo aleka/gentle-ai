@@ -736,6 +736,8 @@ func preselectedAgents(detection system.DetectionResult) []model.AgentID {
 			selected = append(selected, model.AgentCursor)
 		case string(model.AgentVSCodeCopilot):
 			selected = append(selected, model.AgentVSCodeCopilot)
+		case string(model.AgentCodex):
+			selected = append(selected, model.AgentCodex)
 		}
 	}
 

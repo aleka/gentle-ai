@@ -783,6 +783,78 @@ func TestExecute_SuccessfulSnapshotHasNoWarning(t *testing.T) {
 	}
 }
 
+// --- Phase 3: Adapter-driven configPathsForBackup ---
+
+// TestConfigPathsForBackup_CoversRegistryAgentsNotInOldList verifies that
+// configPathsForBackup covers agents from the full registry, not just the
+// previous hardcoded 4-agent list (claude, opencode, gemini, cursor).
+//
+// codex (~/.codex) was NOT in the old hardcoded list. After wiring to
+// agents.ConfigRootsForBackup, it must be covered automatically.
+func TestConfigPathsForBackup_CoversRegistryAgentsNotInOldList(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Create a file under codex config dir — not in old hardcoded list.
+	codexFile := filepath.Join(homeDir, ".codex", "agents.md")
+	if err := os.MkdirAll(filepath.Dir(codexFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(codexFile, []byte("# Codex config"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	paths := configPathsForBackup(homeDir)
+
+	pathSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+	}
+
+	if _, ok := pathSet[codexFile]; !ok {
+		t.Errorf("configPathsForBackup() missing codex config file %q — must cover all registry agents, not just old hardcoded 4; got paths: %v", codexFile, paths)
+	}
+}
+
+// TestConfigPathsForBackup_GGAExtrasAreIncluded verifies that GGA-specific
+// paths (config file, runtime lib dir) are included in the backup paths even
+// though GGA is not an agent in the adapter registry. These are approved
+// non-agent extras that must be preserved outside the canonical managed set.
+func TestConfigPathsForBackup_GGAExtrasAreIncluded(t *testing.T) {
+	homeDir := t.TempDir()
+
+	// Create GGA config file at ~/.config/gga/config
+	ggaConfigFile := filepath.Join(homeDir, ".config", "gga", "config")
+	if err := os.MkdirAll(filepath.Dir(ggaConfigFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll gga config: %v", err)
+	}
+	if err := os.WriteFile(ggaConfigFile, []byte("gga-config"), 0o644); err != nil {
+		t.Fatalf("WriteFile gga config: %v", err)
+	}
+
+	// Create GGA runtime lib file at ~/.local/share/gga/lib/pr_mode.sh
+	ggaLibFile := filepath.Join(homeDir, ".local", "share", "gga", "lib", "pr_mode.sh")
+	if err := os.MkdirAll(filepath.Dir(ggaLibFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll gga lib: %v", err)
+	}
+	if err := os.WriteFile(ggaLibFile, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("WriteFile gga lib: %v", err)
+	}
+
+	paths := configPathsForBackup(homeDir)
+
+	pathSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+	}
+
+	if _, ok := pathSet[ggaConfigFile]; !ok {
+		t.Errorf("configPathsForBackup() missing GGA config file %q — GGA extras must remain in backup; got paths: %v", ggaConfigFile, paths)
+	}
+	if _, ok := pathSet[ggaLibFile]; !ok {
+		t.Errorf("configPathsForBackup() missing GGA lib file %q — GGA extras must remain in backup; got paths: %v", ggaLibFile, paths)
+	}
+}
+
 // containsSubstring checks whether s contains sub.
 func containsSubstring(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
