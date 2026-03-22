@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
@@ -16,6 +17,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/tui"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
+	"github.com/gentleman-programming/gentle-ai/internal/update/upgrade"
 	"github.com/gentleman-programming/gentle-ai/internal/verify"
 )
 
@@ -59,6 +61,8 @@ func RunArgs(args []string, stdout io.Writer) error {
 		results := update.CheckAll(context.Background(), Version, profile)
 		_, _ = fmt.Fprint(stdout, update.RenderCLI(results))
 		return nil
+	case "upgrade":
+		return runUpgrade(context.Background(), args[1:], result, stdout)
 	case "install":
 		installResult, err := cli.RunInstall(args[1:], result)
 		if err != nil {
@@ -72,9 +76,63 @@ func RunArgs(args []string, stdout io.Writer) error {
 		}
 
 		return nil
+	case "sync":
+		syncResult, err := cli.RunSync(args[1:])
+		if err != nil {
+			return err
+		}
+
+		_, _ = fmt.Fprintln(stdout, cli.RenderSyncReport(syncResult))
+		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// runUpgrade handles the `gentle-ai upgrade [--dry-run] [tool...]` command.
+//
+// This command:
+//   - Checks for available updates for managed tools (gentle-ai, engram, gga)
+//   - Snapshots agent config paths before execution (config preservation by design)
+//   - Executes binary-only upgrades; does NOT invoke install or sync pipelines
+//   - Skips gentle-ai itself when running as a dev build (version="dev")
+//   - Falls back to manual guidance for unsafe platforms (Windows binary self-replace)
+func runUpgrade(ctx context.Context, args []string, detection system.DetectionResult, stdout io.Writer) error {
+	dryRun := false
+	var toolFilter []string
+
+	for _, arg := range args {
+		switch {
+		case arg == "--dry-run" || arg == "-n":
+			dryRun = true
+		case !strings.HasPrefix(arg, "-"):
+			toolFilter = append(toolFilter, arg)
+		}
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	profile := cli.ResolveInstallProfile(detection)
+
+	// Check for available updates (filtered to requested tools if specified).
+	checkResults := update.CheckFiltered(ctx, Version, profile, toolFilter)
+
+	// Execute upgrades (no-op if nothing is UpdateAvailable).
+	report := upgrade.Execute(ctx, checkResults, profile, homeDir, dryRun)
+
+	_, _ = fmt.Fprint(stdout, upgrade.RenderUpgradeReport(report))
+
+	// Return error only if any tool failed (not for skipped/manual).
+	for _, r := range report.Results {
+		if r.Status == upgrade.UpgradeFailed && r.Err != nil {
+			return fmt.Errorf("upgrade failed for %q: %w", r.ToolName, r.Err)
+		}
+	}
+
+	return nil
 }
 
 // tuiExecute creates a real install runtime and runs the pipeline with progress reporting.

@@ -62,6 +62,8 @@ func statusIcon(status UpdateStatus) string {
 		return "[??]"
 	case CheckFailed:
 		return "[!!]"
+	case DevBuild:
+		return "[dev]"
 	default:
 		return "[  ]"
 	}
