@@ -44,6 +44,12 @@ var (
 	runCommand          = executeCommand
 	cmdLookPath         = exec.LookPath
 	streamCommandOutput = true
+
+	// AppVersion is the gentle-ai version that will be written into backup manifests.
+	// It is set by app.go before any CLI operation so that every backup created during
+	// an install or sync records which version of gentle-ai made it.
+	// Default "dev" matches the ldflags default in app.Version.
+	AppVersion = "dev"
 )
 
 // SetCommandOutputStreaming toggles whether command stdout/stderr is streamed
@@ -243,6 +249,9 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 			snapshotDir: filepath.Join(r.backupRoot, time.Now().UTC().Format("20060102150405.000000000")),
 			targets:     targets,
 			state:       r.state,
+			source:      backup.BackupSourceInstall,
+			description: "pre-install snapshot",
+			appVersion:  AppVersion,
 		},
 	}
 
@@ -273,6 +282,15 @@ type prepareBackupStep struct {
 	snapshotDir string
 	targets     []string
 	state       *runtimeState
+
+	// source and description are optional metadata written into the manifest.
+	// When set, they help users identify what created the backup.
+	source      backup.BackupSource
+	description string
+
+	// appVersion is the gentle-ai version that created this backup.
+	// When set, it is written into the manifest as CreatedByVersion.
+	appVersion string
 }
 
 func (s prepareBackupStep) ID() string {
@@ -283,6 +301,20 @@ func (s prepareBackupStep) Run() error {
 	manifest, err := s.snapshotter.Create(s.snapshotDir, s.targets)
 	if err != nil {
 		return fmt.Errorf("create backup snapshot: %w", err)
+	}
+
+	// Annotate with source metadata and version when provided, then re-write.
+	// FileCount is already populated by Snapshotter.Create.
+	if s.source != "" || s.appVersion != "" {
+		manifest.Source = s.source
+		manifest.Description = s.description
+		manifest.CreatedByVersion = s.appVersion
+		manifestPath := filepath.Join(s.snapshotDir, backup.ManifestFilename)
+		if err := backup.WriteManifest(manifestPath, manifest); err != nil {
+			// Non-fatal: metadata annotation failed but the snapshot is intact.
+			// The backup is still usable — restore will work. We just lose the label.
+			_ = err
+		}
 	}
 
 	s.state.manifest = manifest

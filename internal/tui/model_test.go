@@ -258,22 +258,33 @@ func TestBuildProgressLabelsFromResolvedPlan(t *testing.T) {
 }
 
 func TestBackupRestoreMsgHandledGracefully(t *testing.T) {
+	// Error case: BackupRestoreMsg with error navigates to ScreenRestoreResult
+	// and stores the error in RestoreErr.
 	m := NewModel(system.DetectionResult{}, "dev")
-	m.Progress = NewProgressState([]string{})
+	m.Screen = ScreenRestoreConfirm
 
-	// Error case.
 	updated, _ := m.Update(BackupRestoreMsg{Err: fmt.Errorf("restore-error")})
 	state := updated.(Model)
-	if state.Err == nil {
-		t.Fatalf("expected Err to be set")
+
+	if state.Screen != ScreenRestoreResult {
+		t.Fatalf("error case: expected ScreenRestoreResult, got %v", state.Screen)
+	}
+	if state.RestoreErr == nil {
+		t.Fatalf("expected RestoreErr to be set on error")
 	}
 
-	// Success case.
-	state.Err = nil
-	updated, _ = state.Update(BackupRestoreMsg{})
-	state = updated.(Model)
-	if state.Err != nil {
-		t.Fatalf("unexpected Err: %v", state.Err)
+	// Success case: BackupRestoreMsg with no error navigates to ScreenRestoreResult
+	// with nil RestoreErr.
+	m2 := NewModel(system.DetectionResult{}, "dev")
+	m2.Screen = ScreenRestoreConfirm
+	updated2, _ := m2.Update(BackupRestoreMsg{})
+	state2 := updated2.(Model)
+
+	if state2.Screen != ScreenRestoreResult {
+		t.Fatalf("success case: expected ScreenRestoreResult, got %v", state2.Screen)
+	}
+	if state2.RestoreErr != nil {
+		t.Fatalf("unexpected RestoreErr on success: %v", state2.RestoreErr)
 	}
 }
 

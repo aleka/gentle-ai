@@ -11,6 +11,7 @@ package upgrade
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -25,16 +26,69 @@ import (
 // Swapping this var in tests controls which commands are actually run.
 var execCommand = exec.Command
 
-// configPathsForBackup returns the well-known agent config file paths that the
-// backup snapshot must include before any upgrade execution.
-// These are the same paths scanned by system.ScanConfigs.
+// snapshotCreator is the function used to create a backup snapshot before
+// upgrade execution. Swapping this var in tests allows forcing snapshot
+// failures to verify end-to-end warning surfacing in UpgradeReport.
+var snapshotCreator = func(snapshotDir string, paths []string) (backup.Manifest, error) {
+	return backup.NewSnapshotter().Create(snapshotDir, paths)
+}
+
+// AppVersion is the gentle-ai version written into backup manifests created by
+// the upgrade executor. Set by app.go before calling Execute so that upgrade
+// backups record the version that created them.
+// Default "dev" matches the ldflags default in app.Version.
+var AppVersion = "dev"
+
+// configPathsForBackup returns the agent config file paths that the backup
+// snapshot must include before any upgrade execution.
+//
+// This function replaces the previous hardcoded file list with a computed
+// approach that enumerates files within each agent config directory, aligned
+// with what system.ScanConfigs tracks. This ensures new agents and additional
+// config files added to those directories are automatically included in the
+// pre-upgrade backup (G5 gap fix).
+//
+// Only files (not directories) are included — Snapshotter.Create rejects dirs.
+// Non-existent directories are silently skipped.
 func configPathsForBackup(homeDir string) []string {
-	return []string{
-		filepath.Join(homeDir, ".claude", "CLAUDE.md"),
-		filepath.Join(homeDir, ".config", "opencode", "config.json"),
-		filepath.Join(homeDir, ".gemini", "GEMINI.md"),
-		filepath.Join(homeDir, ".cursor", "rules"),
+	// Agent config directories scanned by system.ScanConfigs.
+	configDirs := []string{
+		filepath.Join(homeDir, ".claude"),
+		filepath.Join(homeDir, ".config", "opencode"),
+		filepath.Join(homeDir, ".gemini"),
+		filepath.Join(homeDir, ".cursor"),
 	}
+
+	paths := make([]string, 0)
+	for _, dir := range configDirs {
+		files, err := enumerateFilesInDir(dir)
+		if err != nil {
+			// Directory doesn't exist or can't be read — silently skip.
+			continue
+		}
+		paths = append(paths, files...)
+	}
+
+	return paths
+}
+
+// enumerateFilesInDir returns the paths of all regular files (recursively) in dir.
+// Returns an error if dir cannot be read (e.g. it doesn't exist).
+func enumerateFilesInDir(dir string) ([]string, error) {
+	var files []string
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// Skip unreadable entries within the dir — don't abort the walk.
+			return nil
+		}
+		if !d.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	})
+
+	return files, err
 }
 
 // Execute evaluates UpdateResults, snapshots config before execution, then runs
@@ -70,15 +124,24 @@ func Execute(ctx context.Context, results []update.UpdateResult, profile system.
 
 	// Create backup snapshot BEFORE any execution (only when there are executables).
 	backupID := ""
+	backupWarning := ""
 	if !dryRun && len(executable) > 0 {
 		snapshotDir := filepath.Join(homeDir, ".gentle-ai", "backups",
 			fmt.Sprintf("upgrade-%s", time.Now().UTC().Format("20060102T150405Z")))
-		snap := backup.NewSnapshotter()
-		manifest, err := snap.Create(snapshotDir, configPathsForBackup(homeDir))
-		if err == nil {
+		manifest, err := snapshotCreator(snapshotDir, configPathsForBackup(homeDir))
+		if err != nil {
+			// G6 gap fix: surface backup failure explicitly instead of silently skipping.
+			backupWarning = fmt.Sprintf("pre-upgrade backup failed — upgrade will run without a backup: %s", err)
+		} else {
+			// Annotate with upgrade source metadata so restore flows show a useful label.
+			manifest.Source = backup.BackupSourceUpgrade
+			manifest.Description = "pre-upgrade snapshot"
+			manifest.CreatedByVersion = AppVersion
+			manifestPath := filepath.Join(snapshotDir, backup.ManifestFilename)
+			// Non-fatal annotation: snapshot is intact even if re-write fails.
+			_ = backup.WriteManifest(manifestPath, manifest)
 			backupID = manifest.ID
 		}
-		// Non-fatal: if backup fails we still proceed and set BackupID empty.
 	}
 
 	// Build results slice: dev-build skips first (no exec), then executable tools.
@@ -103,9 +166,10 @@ func Execute(ctx context.Context, results []update.UpdateResult, profile system.
 	}
 
 	return UpgradeReport{
-		BackupID: backupID,
-		Results:  toolResults,
-		DryRun:   dryRun,
+		BackupID:      backupID,
+		BackupWarning: backupWarning,
+		Results:       toolResults,
+		DryRun:        dryRun,
 	}
 }
 

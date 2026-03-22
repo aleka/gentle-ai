@@ -18,6 +18,8 @@ var linearRoutes = map[Screen]Route{
 	ScreenInstalling:     {Forward: ScreenComplete, Backward: ScreenReview},
 	ScreenComplete:       {Backward: ScreenInstalling},
 	ScreenBackups:        {Backward: ScreenWelcome},
+	ScreenRestoreConfirm: {Backward: ScreenBackups},
+	ScreenRestoreResult:  {Backward: ScreenBackups},
 }
 
 func NextScreen(screen Screen) (Screen, bool) {
