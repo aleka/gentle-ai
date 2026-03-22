@@ -102,6 +102,14 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 
 	// 2b. OpenCode /sdd-* commands reference agent: sdd-orchestrator.
 	// Ensure that agent is present even when persona component is not installed.
+	//
+	// mergedSettingsBytes holds the final merged opencode.json bytes produced by
+	// mergeJSONFile. We keep them in memory so the post-check (step 4) can validate
+	// the merge result without re-reading from disk — on Windows/WSL2, the atomic
+	// rename (temp → target) may not be immediately visible to a subsequent
+	// os.ReadFile call due to VFS/NTFS metadata caching, which caused the spurious
+	// "post-check: .../opencode.json missing sdd-apply sub-agent" error.
+	var mergedSettingsBytes []byte
 	if adapter.Agent() == model.AgentOpenCode {
 		settingsPath := adapter.SettingsPath(homeDir)
 		if settingsPath != "" {
@@ -127,8 +135,9 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 			if err != nil {
 				return InjectionResult{}, err
 			}
-			changed = changed || agentResult.Changed
+			changed = changed || agentResult.writeResult.Changed
 			files = append(files, settingsPath)
+			mergedSettingsBytes = agentResult.merged
 
 			// Install OpenCode plugins (all SDD modes).
 			pluginResult, err := installOpenCodePlugins(homeDir)
@@ -199,20 +208,18 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 	}
 
 	// 4. Post-injection verification — catch silent failures.
-	if adapter.Agent() == model.AgentOpenCode {
-		settingsPath := adapter.SettingsPath(homeDir)
-		if settingsPath != "" {
-			settingsData, err := os.ReadFile(settingsPath)
-			if err != nil {
-				return InjectionResult{}, fmt.Errorf("post-check: cannot read %q: %w", settingsPath, err)
-			}
-			settingsText := string(settingsData)
-			if !strings.Contains(settingsText, `"sdd-orchestrator"`) {
-				return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-orchestrator agent definition — OpenCode /sdd-* commands will fail", settingsPath)
-			}
-			if sddMode == model.SDDModeMulti && !strings.Contains(settingsText, `"sdd-apply"`) {
-				return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-apply sub-agent — multi-mode overlay was not injected correctly", settingsPath)
-			}
+	// Validate against the in-memory merged bytes rather than re-reading from
+	// disk to avoid false negatives on Windows/WSL2 where a freshly-renamed
+	// file may not be immediately readable via os.ReadFile.
+	if adapter.Agent() == model.AgentOpenCode && len(mergedSettingsBytes) > 0 {
+		settingsText := string(mergedSettingsBytes)
+		if !strings.Contains(settingsText, `"sdd-orchestrator"`) {
+			settingsPath := adapter.SettingsPath(homeDir)
+			return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-orchestrator agent definition — OpenCode /sdd-* commands will fail", settingsPath)
+		}
+		if sddMode == model.SDDModeMulti && !strings.Contains(settingsText, `"sdd-apply"`) {
+			settingsPath := adapter.SettingsPath(homeDir)
+			return InjectionResult{}, fmt.Errorf("post-check: %q missing sdd-apply sub-agent — multi-mode overlay was not injected correctly", settingsPath)
 		}
 	}
 
@@ -327,26 +334,41 @@ func runPkgInstall(dir, pkg string) (ran bool, err error) {
 	return false, nil
 }
 
-func mergeJSONFile(path string, overlay []byte) (filemerge.WriteResult, error) {
+type mergeJSONResult struct {
+	writeResult filemerge.WriteResult
+	// merged holds the final JSON bytes that were written to disk.
+	// Callers should validate against this in-memory copy instead of
+	// re-reading the file from disk — on Windows/WSL2, the atomic rename
+	// (temp → target) may not be immediately visible to a subsequent
+	// os.ReadFile call due to VFS/NTFS metadata caching.
+	merged []byte
+}
+
+func mergeJSONFile(path string, overlay []byte) (mergeJSONResult, error) {
 	baseJSON, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return filemerge.WriteResult{}, fmt.Errorf("read json file %q: %w", path, err)
+			return mergeJSONResult{}, fmt.Errorf("read json file %q: %w", path, err)
 		}
 		baseJSON = nil
 	}
 
 	baseJSON, err = migrateLegacyOpenCodeAgentsKey(baseJSON)
 	if err != nil {
-		return filemerge.WriteResult{}, fmt.Errorf("migrate opencode agents key: %w", err)
+		return mergeJSONResult{}, fmt.Errorf("migrate opencode agents key: %w", err)
 	}
 
 	merged, err := filemerge.MergeJSONObjects(baseJSON, overlay)
 	if err != nil {
-		return filemerge.WriteResult{}, err
+		return mergeJSONResult{}, err
 	}
 
-	return filemerge.WriteFileAtomic(path, merged, 0o644)
+	writeResult, err := filemerge.WriteFileAtomic(path, merged, 0o644)
+	if err != nil {
+		return mergeJSONResult{}, err
+	}
+
+	return mergeJSONResult{writeResult: writeResult, merged: merged}, nil
 }
 
 // migrateLegacyOpenCodeAgentsKey normalizes old OpenCode schema that used
