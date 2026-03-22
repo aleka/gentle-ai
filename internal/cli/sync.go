@@ -121,35 +121,25 @@ func BuildSyncSelection(flags SyncFlags, agentIDs []model.AgentID) model.Selecti
 // DiscoverAgents returns the agent IDs whose GlobalConfigDir exists on disk.
 // This is the sync-safe discovery path: filesystem-only, no subprocess spawning.
 //
-// When --agents is provided explicitly, callers should pass those IDs directly
-// instead of calling DiscoverAgents.
+// The implementation delegates to agents.DiscoverInstalled with the default
+// registry, making it the canonical managed-agent discovery path shared with
+// upgrade and other flows. When --agents is provided explicitly, callers should
+// pass those IDs directly instead of calling DiscoverAgents.
 func DiscoverAgents(homeDir string) []model.AgentID {
-	// Build a list of all known adapters and check their GlobalConfigDir.
-	allAgentIDs := []model.AgentID{
-		model.AgentClaudeCode,
-		model.AgentOpenCode,
-		model.AgentGeminiCLI,
-		model.AgentCursor,
-		model.AgentVSCodeCopilot,
-		model.AgentCodex,
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		// Registry construction only fails if a duplicate adapter is registered,
+		// which would indicate a programming error. Treat as no agents found
+		// rather than propagating — callers treat an empty result as a no-op.
+		return nil
 	}
 
-	var discovered []model.AgentID
-	for _, agentID := range allAgentIDs {
-		adapter, err := agents.NewAdapter(agentID)
-		if err != nil {
-			continue
-		}
-		configDir := adapter.GlobalConfigDir(homeDir)
-		if configDir == "" {
-			continue
-		}
-		if _, err := os.Stat(configDir); err == nil {
-			discovered = append(discovered, agentID)
-		}
+	installed := agents.DiscoverInstalled(reg, homeDir)
+	ids := make([]model.AgentID, 0, len(installed))
+	for _, a := range installed {
+		ids = append(ids, a.ID)
 	}
-
-	return discovered
+	return ids
 }
 
 // syncRuntime mirrors installRuntime but builds a sync-scoped StagePlan.

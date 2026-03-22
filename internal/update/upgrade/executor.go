@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
 )
@@ -42,23 +44,36 @@ var AppVersion = "dev"
 // configPathsForBackup returns the agent config file paths that the backup
 // snapshot must include before any upgrade execution.
 //
-// This function replaces the previous hardcoded file list with a computed
-// approach that enumerates files within each agent config directory, aligned
-// with what system.ScanConfigs tracks. This ensures new agents and additional
-// config files added to those directories are automatically included in the
-// pre-upgrade backup (G5 gap fix).
+// Roots are derived from two sources:
+//  1. Canonical managed agent roots — via agents.ConfigRootsForBackup using the
+//     default registry. This automatically covers all registered adapters and
+//     picks up new agents without manual list maintenance.
+//  2. Approved GGA extras — gga.ConfigPath and gga.RuntimeLibDir are not adapter-
+//     managed but must still be backed up. They are appended separately and do
+//     not affect the canonical managed set used by sync.
 //
 // Only files (not directories) are included — Snapshotter.Create rejects dirs.
 // Non-existent directories are silently skipped.
 func configPathsForBackup(homeDir string) []string {
-	// Agent config directories scanned by system.ScanConfigs.
-	configDirs := []string{
-		filepath.Join(homeDir, ".claude"),
-		filepath.Join(homeDir, ".config", "opencode"),
-		filepath.Join(homeDir, ".gemini"),
-		filepath.Join(homeDir, ".cursor"),
+	reg, err := agents.NewDefaultRegistry()
+	if err != nil {
+		// Programming error — registry construction failed. Fall back gracefully.
+		reg = nil
 	}
 
+	// Collect config root dirs: canonical agent roots first.
+	var configDirs []string
+	if reg != nil {
+		configDirs = append(configDirs, agents.ConfigRootsForBackup(reg, homeDir)...)
+	}
+
+	// Approved GGA extras — outside the canonical managed agent set.
+	// gga.ConfigPath returns the config *file* path; its parent dir is the root to walk.
+	ggaConfigDir := filepath.Dir(gga.ConfigPath(homeDir))
+	ggaLibDir := gga.RuntimeLibDir(homeDir)
+	configDirs = append(configDirs, ggaConfigDir, ggaLibDir)
+
+	// Enumerate all regular files under each root dir.
 	paths := make([]string, 0)
 	for _, dir := range configDirs {
 		files, err := enumerateFilesInDir(dir)

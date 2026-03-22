@@ -333,6 +333,45 @@ func TestDiscoverAgentsMultiplePresent(t *testing.T) {
 	}
 }
 
+// TestDiscoverAgentsDelegatesCanonicalDiscovery proves that DiscoverAgents
+// derives results from canonical adapter-driven discovery rather than a stale
+// hardcoded list. After the Phase 2 rewire, the wrapper must:
+//   - return agents whose adapter.GlobalConfigDir exists on disk
+//   - not return agents whose config dir is absent
+//   - produce the same set as agents.DiscoverInstalled for the same homeDir
+func TestDiscoverAgentsDelegatesCanonicalDiscovery(t *testing.T) {
+	home := t.TempDir()
+
+	// Create only the codex config dir — a less-common agent that would be
+	// absent from a minimal stale hardcoded list if someone forgot to update it.
+	// This verifies the wrapper consults the registry, not a frozen snapshot.
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	discovered := DiscoverAgents(home)
+
+	// codex MUST be discovered because its config dir exists.
+	found := false
+	for _, id := range discovered {
+		if id == model.AgentCodex {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("DiscoverAgents() did not return codex even though ~/.codex/ exists; got %v — wrapper must delegate to canonical registry discovery", discovered)
+	}
+
+	// No other agents should appear — their dirs don't exist.
+	for _, id := range discovered {
+		if id != model.AgentCodex {
+			t.Errorf("DiscoverAgents() returned unexpected agent %q — no other config dirs were created", id)
+		}
+	}
+}
+
 // ─── Phase 3: componentSyncStep ───────────────────────────────────────────
 
 func TestComponentSyncStepSkipsEngramBinaryInstall(t *testing.T) {

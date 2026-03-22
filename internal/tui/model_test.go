@@ -350,3 +350,87 @@ func TestShouldShowSDDModeScreen(t *testing.T) {
 func screensAgentOptions() []model.AgentID {
 	return screens.AgentOptions()
 }
+
+// ─── Detection-default consumer regression tests ───────────────────────────
+
+// makeDetectionWithAgents builds a DetectionResult with the specified agents
+// marked as Exists=true. All other agents are absent.
+func makeDetectionWithAgents(present ...string) system.DetectionResult {
+	known := []string{"claude-code", "opencode", "gemini-cli", "cursor", "vscode-copilot", "codex"}
+	presentSet := make(map[string]bool, len(present))
+	for _, p := range present {
+		presentSet[p] = true
+	}
+	var configs []system.ConfigState
+	for _, agent := range known {
+		configs = append(configs, system.ConfigState{
+			Agent:       agent,
+			Path:        "/tmp/fake/" + agent,
+			Exists:      presentSet[agent],
+			IsDirectory: presentSet[agent],
+		})
+	}
+	return system.DetectionResult{Configs: configs}
+}
+
+// TestPreselectedAgents_CodexIsIncludedWhenPresent is a regression guard:
+// when the codex config dir is detected, preselectedAgents must include
+// model.AgentCodex. Previously the switch statement omitted codex, so
+// detection-driven TUI preselection silently dropped it.
+func TestPreselectedAgents_CodexIsIncludedWhenPresent(t *testing.T) {
+	detection := makeDetectionWithAgents("codex")
+	selected := preselectedAgents(detection)
+
+	found := false
+	for _, id := range selected {
+		if id == model.AgentCodex {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("preselectedAgents() did not include codex even though config dir is present; got %v", selected)
+	}
+}
+
+// TestPreselectedAgents_AllSixAgentsMappedCorrectly verifies every canonical
+// agent string maps to its model.AgentID constant in preselectedAgents.
+// This prevents silent drops when new agents are added to ScanConfigs without
+// updating the TUI switch statement.
+func TestPreselectedAgents_AllSixAgentsMappedCorrectly(t *testing.T) {
+	tests := []struct {
+		configAgent string
+		wantID      model.AgentID
+	}{
+		{"claude-code", model.AgentClaudeCode},
+		{"opencode", model.AgentOpenCode},
+		{"gemini-cli", model.AgentGeminiCLI},
+		{"cursor", model.AgentCursor},
+		{"vscode-copilot", model.AgentVSCodeCopilot},
+		{"codex", model.AgentCodex},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.configAgent, func(t *testing.T) {
+			detection := makeDetectionWithAgents(tt.configAgent)
+			selected := preselectedAgents(detection)
+
+			found := false
+			for _, id := range selected {
+				if id == tt.wantID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("preselectedAgents() missing %q → %q mapping; got %v",
+					tt.configAgent, tt.wantID, selected)
+			}
+			// Exactly one agent should be in the result (only one dir exists).
+			if len(selected) != 1 {
+				t.Errorf("preselectedAgents() returned %d agents, want 1 (only %q detected); got %v",
+					len(selected), tt.configAgent, selected)
+			}
+		})
+	}
+}
