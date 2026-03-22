@@ -1609,3 +1609,188 @@ func TestInjectCodexIsIdempotent(t *testing.T) {
 		t.Fatal("second Inject(codex) changed = true — SDD orchestrator was duplicated")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regression: post-check must validate in-memory merged bytes, not re-read disk
+// (Windows/WSL2 atomic-write visibility bug — "missing sdd-apply sub-agent")
+// ---------------------------------------------------------------------------
+
+// TestInjectOpenCodeMultiModeWithPreExistingMinimalConfig reproduces the
+// Windows/WSL2 regression where a pre-existing minimal opencode.json (e.g.
+// only {"model": "anthropic/..."}) caused the post-check to fail with:
+//
+//	post-check: .../opencode.json missing sdd-apply sub-agent
+//
+// The root cause was re-reading the file from disk after the atomic rename,
+// which could see stale content on Windows/WSL2. The fix validates against
+// the in-memory merged bytes returned by mergeJSONFile instead.
+func TestInjectOpenCodeMultiModeWithPreExistingMinimalConfig(t *testing.T) {
+	home := t.TempDir()
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Simulate a minimal pre-existing config (e.g. set by the user for model selection).
+	minimal := `{"model": "anthropic/claude-sonnet-4-20250514"}` + "\n"
+	if err := os.WriteFile(settingsPath, []byte(minimal), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	// This must NOT fail with "post-check: ... missing sdd-apply sub-agent".
+	result, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) with pre-existing minimal config error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(multi) changed = false")
+	}
+
+	// Verify the merged file contains the expected content.
+	content, readErr := os.ReadFile(settingsPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", readErr)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	// The pre-existing model field must be preserved.
+	if m, _ := root["model"].(string); m != "anthropic/claude-sonnet-4-20250514" {
+		t.Fatalf("pre-existing model field lost after merge: got %q", m)
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent key after merge")
+	}
+	if _, ok := agentMap["sdd-orchestrator"]; !ok {
+		t.Fatal("missing sdd-orchestrator after merge with pre-existing config")
+	}
+	if _, ok := agentMap["sdd-apply"]; !ok {
+		t.Fatal("missing sdd-apply after merge with pre-existing config — post-check regression")
+	}
+}
+
+// TestInjectOpenCodeMultiModeWithPreExistingFullConfig verifies that a
+// pre-existing opencode.json with a non-trivial structure (multiple keys,
+// provider settings, etc.) is correctly merged with the multi-mode overlay
+// and passes the post-check without any disk re-read race.
+func TestInjectOpenCodeMultiModeWithPreExistingFullConfig(t *testing.T) {
+	home := t.TempDir()
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Simulate a realistic pre-existing user config.
+	existing := `{
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "provider": {
+    "anthropic": {
+      "apiKey": "sk-ant-..."
+    }
+  },
+  "theme": "dark",
+  "keybinds": {
+    "leader": "ctrl+g"
+  }
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	result, err := Inject(home, opencodeAdapter(), "multi")
+	if err != nil {
+		t.Fatalf("Inject(multi) with full pre-existing config error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(multi) changed = false")
+	}
+
+	content, readErr := os.ReadFile(settingsPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", readErr)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	// All pre-existing top-level keys must be preserved.
+	if m, _ := root["model"].(string); m != "anthropic/claude-sonnet-4-20250514" {
+		t.Fatalf("pre-existing model field lost: got %q", m)
+	}
+	if _, ok := root["theme"]; !ok {
+		t.Fatal("pre-existing theme field lost after merge")
+	}
+	if _, ok := root["keybinds"]; !ok {
+		t.Fatal("pre-existing keybinds field lost after merge")
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent key after merge")
+	}
+
+	// All 10 multi-mode agents must be present.
+	for _, agentName := range []string{
+		"sdd-orchestrator", "sdd-init", "sdd-explore", "sdd-propose",
+		"sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
+	} {
+		if _, ok := agentMap[agentName]; !ok {
+			t.Fatalf("missing agent %q after merge with full pre-existing config", agentName)
+		}
+	}
+}
+
+// TestMergeJSONFileReturnsMergedBytes verifies that mergeJSONFile returns the
+// merged bytes in-memory, so callers never need to re-read from disk to
+// validate the result (the fix for the Windows/WSL2 post-check bug).
+func TestMergeJSONFileReturnsMergedBytes(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.json")
+
+	base := `{"existing": "value"}`
+	if err := os.WriteFile(path, []byte(base), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	overlay := []byte(`{"new_key": "new_value"}`)
+
+	result, err := mergeJSONFile(path, overlay)
+	if err != nil {
+		t.Fatalf("mergeJSONFile() error = %v", err)
+	}
+
+	// The returned merged bytes must not be nil.
+	if len(result.merged) == 0 {
+		t.Fatal("mergeJSONFile() returned empty merged bytes — post-check will fail on Windows/WSL2")
+	}
+
+	// The merged bytes must contain both the base and overlay content.
+	mergedStr := string(result.merged)
+	if !strings.Contains(mergedStr, `"existing"`) {
+		t.Fatal("merged bytes missing base key 'existing'")
+	}
+	if !strings.Contains(mergedStr, `"new_key"`) {
+		t.Fatal("merged bytes missing overlay key 'new_key'")
+	}
+
+	// The merged bytes must be valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal(result.merged, &parsed); err != nil {
+		t.Fatalf("merged bytes are not valid JSON: %v", err)
+	}
+
+	// writeResult must reflect that the file was changed.
+	if !result.writeResult.Changed {
+		t.Fatal("writeResult.Changed = false — first write of different content should be changed")
+	}
+}
