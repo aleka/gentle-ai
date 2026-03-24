@@ -525,6 +525,8 @@ func sddOrchestratorAsset(agent model.AgentID) string {
 		return "codex/sdd-orchestrator.md"
 	case model.AgentAntigravity:
 		return "antigravity/sdd-orchestrator.md"
+	case model.AgentWindsurf:
+		return "windsurf/sdd-orchestrator.md"
 	default:
 		return "generic/sdd-orchestrator.md"
 	}
