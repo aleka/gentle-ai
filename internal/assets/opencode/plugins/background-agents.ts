@@ -37,7 +37,7 @@ export type OpencodeClient = ReturnType<typeof createOpencodeClient>
 // INLINED: kdco-primitives/with-timeout
 // ==========================================
 
-export class TimeoutError extends Error {
+class TimeoutError extends Error {
   readonly name = "TimeoutError" as const
   readonly timeoutMs: number
   constructor(message: string, timeoutMs: number) {
@@ -46,7 +46,7 @@ export class TimeoutError extends Error {
   }
 }
 
-export async function withTimeout<T>(
+async function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
   message = "Operation timed out",
@@ -69,7 +69,7 @@ export async function withTimeout<T>(
 // INLINED: kdco-primitives/log-warn
 // ==========================================
 
-export function logWarn(
+function logWarn(
   client: OpencodeClient | undefined,
   service: string,
   message: string,
@@ -816,10 +816,7 @@ ${description}
    */
   private async notifyParent(delegation: Delegation): Promise<void> {
     try {
-      // Use generated title/description if available
-      const title = delegation.title || delegation.id
       const statusText = delegation.status === "complete" ? "complete" : delegation.status
-      const result = delegation.result || "(No result)"
 
       // Mark this delegation as complete in the pending tracker
       const pendingSet = this.pendingByParent.get(delegation.parentSessionID)
@@ -835,21 +832,11 @@ ${description}
         this.pendingByParent.delete(delegation.parentSessionID)
       }
 
-      const remainingCount = pendingSet?.size || 0
-
-      // Always send the completed delegation notification first
-      const progressNote =
-        remainingCount > 0
-          ? `\n${remainingCount} delegation${remainingCount === 1 ? "" : "s"} still in progress. You WILL be notified when ALL complete. Do NOT poll delegation_list.`
-          : ""
+      // Always send the completed delegation notification first (compact — full result is on disk)
       const completionNotification = `[TASK NOTIFICATION]
 ID: ${delegation.id}
 Status: ${statusText}
-Agent: ${title}${delegation.error ? `\nError: ${delegation.error}` : ""}${progressNote}
-
-Result:
-
-${result}`
+Use delegation_read(id) to retrieve the full result.`
 
       await this.client.session.prompt({
         path: { id: delegation.parentSessionID },
@@ -1117,8 +1104,8 @@ Use this for:
 - Parallel work that can run in background
 - Any task where you want persistent, retrievable output
 
-On completion, a notification will arrive with the ID, title, description, and result.
-Use \`delegation_read\` with the ID to retrieve the result again if it is lost during compaction.`,
+On completion, a compact notification arrives with the ID and status only.
+Use \`delegation_read(id)\` to retrieve the full result. Results are persisted to disk and survive compaction.`,
     args: {
       prompt: tool.schema
         .string()
@@ -1236,8 +1223,8 @@ Any agent can be used with \`delegate\`. Results survive context compaction.
 
 1. Call \`delegate(prompt, agent)\` with a detailed prompt and agent name
 2. Continue productive work while it runs in the background
-3. Receive a \`<task-notification>\` when complete (with full result inline)
-4. If result was lost during compaction, use \`delegation_read(id)\` to retrieve it
+3. Receive a \`<task-notification>\` when complete (compact: ID + status only)
+4. Use \`delegation_read(id)\` to retrieve the full result when needed
 
 ## Critical Constraints
 
@@ -1301,26 +1288,15 @@ function formatDelegationContext(
     sections.push("")
   }
 
-  // Completed delegations (recent)
+  // Completed delegations (recent) — compact: just ID + status, full output is on disk
   if (completed.length > 0) {
     sections.push("## Recent Completed Delegations")
     sections.push("")
     for (const d of completed) {
-      const statusEmoji =
-        d.status === "complete"
-          ? "✅"
-          : d.status === "error"
-            ? "❌"
-            : d.status === "timeout"
-              ? "⏱️"
-              : "🚫"
-      sections.push(`### ${statusEmoji} \`${d.id}\``)
-      sections.push(`**Title:** ${d.title || "(no title)"}`)
-      sections.push(`**Status:** ${d.status}`)
-      sections.push(`**Description:** ${d.description || "(no description)"}`)
-      sections.push("")
+      sections.push(`- \`${d.id}\` [${d.status}]`)
     }
-    sections.push("> Use `delegation_list()` to see all delegations for this session.")
+    sections.push("")
+    sections.push("> Use `delegation_read(id)` to get full output for any completed delegation.")
     sections.push("")
   }
 
