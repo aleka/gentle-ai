@@ -20,6 +20,11 @@ type InjectionResult struct {
 	Files   []string
 }
 
+type InjectOptions struct {
+	OpenCodeModelAssignments map[string]model.ModelAssignment
+	ClaudeModelAssignments   map[string]model.ClaudeModelAlias
+}
+
 var (
 	npmLookPath = exec.LookPath
 	npmRun      = func(dir string, args ...string) ([]byte, error) {
@@ -41,9 +46,14 @@ func overlayAssetPath(sddMode model.SDDModeID) string {
 	return "opencode/sdd-overlay-single.json"
 }
 
-func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, modelAssignments ...map[string]model.ModelAssignment) (InjectionResult, error) {
+func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, options ...InjectOptions) (InjectionResult, error) {
 	if !adapter.SupportsSystemPrompt() {
 		return InjectionResult{}, nil
+	}
+
+	var opts InjectOptions
+	if len(options) > 0 {
+		opts = options[0]
 	}
 
 	files := make([]string, 0)
@@ -56,7 +66,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 	if adapter.Agent() != model.AgentOpenCode {
 		switch adapter.SystemPromptStrategy() {
 		case model.StrategyMarkdownSections:
-			result, err := injectMarkdownSections(homeDir, adapter)
+			result, err := injectMarkdownSections(homeDir, adapter, opts.ClaudeModelAssignments)
 			if err != nil {
 				return InjectionResult{}, err
 			}
@@ -129,10 +139,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, mod
 			if err != nil {
 				return InjectionResult{}, fmt.Errorf("inline OpenCode SDD prompts: %w", err)
 			}
-			var assignments map[string]model.ModelAssignment
-			if len(modelAssignments) > 0 {
-				assignments = modelAssignments[0]
-			}
+			assignments := opts.OpenCodeModelAssignments
 			if sddMode != model.SDDModeMulti {
 				assignments = nil
 			}
@@ -615,9 +622,16 @@ func stripBareOrchestratorSection(content string) string {
 	return result
 }
 
-func injectMarkdownSections(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
+func injectMarkdownSections(homeDir string, adapter agents.Adapter, assignments map[string]model.ClaudeModelAlias) (InjectionResult, error) {
 	promptPath := adapter.SystemPromptFile(homeDir)
 	content := assets.MustRead("claude/sdd-orchestrator.md")
+	if len(assignments) > 0 {
+		var err error
+		content, err = injectClaudeModelAssignments(content, assignments)
+		if err != nil {
+			return InjectionResult{}, err
+		}
+	}
 
 	existing, err := readFileOrEmpty(promptPath)
 	if err != nil {
@@ -639,6 +653,71 @@ func injectMarkdownSections(homeDir string, adapter agents.Adapter) (InjectionRe
 	}
 
 	return InjectionResult{Changed: writeResult.Changed, Files: []string{promptPath}}, nil
+}
+
+var claudeModelAssignmentRowOrder = []string{
+	"orchestrator",
+	"sdd-explore",
+	"sdd-propose",
+	"sdd-spec",
+	"sdd-design",
+	"sdd-tasks",
+	"sdd-apply",
+	"sdd-verify",
+	"sdd-archive",
+	"default",
+}
+
+var claudeModelAssignmentReasons = map[string]string{
+	"orchestrator": "Coordinates, makes decisions",
+	"sdd-explore":  "Reads code, structural - not architectural",
+	"sdd-propose":  "Architectural decisions",
+	"sdd-spec":     "Structured writing",
+	"sdd-design":   "Architecture decisions",
+	"sdd-tasks":    "Mechanical breakdown",
+	"sdd-apply":    "Implementation",
+	"sdd-verify":   "Validation against spec",
+	"sdd-archive":  "Copy and close",
+	"default":      "Non-SDD general delegation",
+}
+
+func injectClaudeModelAssignments(content string, assignments map[string]model.ClaudeModelAlias) (string, error) {
+	const openMarker = "<!-- gentle-ai:sdd-model-assignments -->"
+	const closeMarker = "<!-- /gentle-ai:sdd-model-assignments -->"
+
+	start := strings.Index(content, openMarker)
+	end := strings.Index(content, closeMarker)
+	if start == -1 || end == -1 || end < start {
+		return "", fmt.Errorf("sdd orchestrator asset missing model assignment markers")
+	}
+
+	merged := model.ClaudeModelPresetBalanced()
+	for key, alias := range assignments {
+		if alias.Valid() {
+			merged[key] = alias
+		}
+	}
+
+	replacement := renderClaudeModelAssignmentsSection(merged)
+	start += len(openMarker)
+	return content[:start] + "\n" + replacement + content[end:], nil
+}
+
+func renderClaudeModelAssignmentsSection(assignments map[string]model.ClaudeModelAlias) string {
+	var b strings.Builder
+	b.WriteString("## Model Assignments\n\n")
+	b.WriteString("Read this table at session start (or before first delegation), cache it for the session, and pass the mapped alias in every Agent tool call via the `model` parameter. If a phase is missing, use the `default` row. If you do not have access to the assigned model (for example, no Opus access), substitute `sonnet` and continue.\n\n")
+	b.WriteString("| Phase | Default Model | Reason |\n")
+	b.WriteString("|-------|---------------|--------|\n")
+	for _, key := range claudeModelAssignmentRowOrder {
+		alias := assignments[key]
+		if !alias.Valid() {
+			alias = model.ClaudeModelSonnet
+		}
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", key, alias, claudeModelAssignmentReasons[key]))
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // injectModelAssignments injects "model" fields into sub-agent definitions

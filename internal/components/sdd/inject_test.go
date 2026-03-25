@@ -112,6 +112,71 @@ func TestInjectClaudeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInjectClaudeCustomModelAssignments(t *testing.T) {
+	home := t.TempDir()
+
+	opts := InjectOptions{ClaudeModelAssignments: map[string]model.ClaudeModelAlias{
+		"orchestrator": model.ClaudeModelSonnet,
+		"sdd-design":   model.ClaudeModelSonnet,
+		"default":      model.ClaudeModelHaiku,
+	}}
+
+	result, err := Inject(home, claudeAdapter(), "", opts)
+	if err != nil {
+		t.Fatalf("Inject(claude, custom assignments) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(claude, custom assignments) changed = false")
+	}
+
+	content, err := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(CLAUDE.md) error = %v", err)
+	}
+
+	text := string(content)
+	for _, want := range []string{
+		"| orchestrator | sonnet | Coordinates, makes decisions |",
+		"| sdd-design | sonnet | Architecture decisions |",
+		"| default | haiku | Non-SDD general delegation |",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("CLAUDE.md missing custom table row %q", want)
+		}
+	}
+
+	if !strings.Contains(text, "<!-- gentle-ai:sdd-model-assignments -->") {
+		t.Fatal("CLAUDE.md missing model assignment open marker")
+	}
+	if !strings.Contains(text, "<!-- /gentle-ai:sdd-model-assignments -->") {
+		t.Fatal("CLAUDE.md missing model assignment close marker")
+	}
+}
+
+func TestInjectClaudeCustomModelAssignmentsIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	opts := InjectOptions{ClaudeModelAssignments: map[string]model.ClaudeModelAlias{
+		"orchestrator": model.ClaudeModelSonnet,
+		"sdd-design":   model.ClaudeModelSonnet,
+	}}
+
+	first, err := Inject(home, claudeAdapter(), "", opts)
+	if err != nil {
+		t.Fatalf("Inject() first error = %v", err)
+	}
+	if !first.Changed {
+		t.Fatal("Inject() first changed = false")
+	}
+
+	second, err := Inject(home, claudeAdapter(), "", opts)
+	if err != nil {
+		t.Fatalf("Inject() second error = %v", err)
+	}
+	if second.Changed {
+		t.Fatal("Inject() second changed = true")
+	}
+}
+
 func TestInjectOpenCodeWritesCommandFiles(t *testing.T) {
 	home := t.TempDir()
 
@@ -887,7 +952,7 @@ func TestInjectOpenCodeMultiModeWithModelAssignments(t *testing.T) {
 		"sdd-apply": {ProviderID: "openai", ModelID: "gpt-4o"},
 	}
 
-	result, err := Inject(home, opencodeAdapter(), "multi", assignments)
+	result, err := Inject(home, opencodeAdapter(), "multi", InjectOptions{OpenCodeModelAssignments: assignments})
 	if err != nil {
 		t.Fatalf("Inject(multi, assignments) error = %v", err)
 	}
@@ -986,7 +1051,7 @@ func TestInjectSingleModeIgnoresModelAssignments(t *testing.T) {
 		"sdd-init": {ProviderID: "anthropic", ModelID: "claude-sonnet-4-20250514"},
 	}
 
-	result, err := Inject(home, opencodeAdapter(), "single", assignments)
+	result, err := Inject(home, opencodeAdapter(), "single", InjectOptions{OpenCodeModelAssignments: assignments})
 	if err != nil {
 		t.Fatalf("Inject(single, assignments) error = %v", err)
 	}
@@ -1064,7 +1129,7 @@ func TestInjectOpenCodeMultiModeExplicitAssignmentsOverrideRootModel(t *testing.
 		"sdd-apply": {ProviderID: "anthropic", ModelID: "claude-opus-4-6"},
 	}
 
-	if _, err := Inject(home, opencodeAdapter(), "multi", assignments); err != nil {
+	if _, err := Inject(home, opencodeAdapter(), "multi", InjectOptions{OpenCodeModelAssignments: assignments}); err != nil {
 		t.Fatalf("Inject(multi, assignments) error = %v", err)
 	}
 
