@@ -1101,15 +1101,21 @@ func TestInjectOpenCodeMultiModeUsesRootModelForUnassignedAgents(t *testing.T) {
 		t.Fatal("opencode.json missing agent map")
 	}
 
-	// With no explicit assignments, sub-agents should NOT get model fields.
-	// The overlay no longer hardcodes models, and root model is not propagated.
+	// With no explicit assignments but a root model, all sub-agents that are NOT
+	// pre-existing in the user's config should get the root model injected.
+	// Since we started with only {"model":"openai/gpt-5"} (no agent entries),
+	// ALL agents are "new" from the 3-way logic perspective and should get rootModel.
 	for _, phase := range []string{"sdd-orchestrator", "sdd-init", "sdd-verify"} {
 		agentDef, ok := agentMap[phase].(map[string]any)
 		if !ok {
 			t.Fatalf("phase %q agent not found or wrong type", phase)
 		}
-		if _, hasModel := agentDef["model"]; hasModel {
-			t.Fatalf("%s should NOT have model field (no explicit assignments)", phase)
+		m, hasModel := agentDef["model"]
+		if !hasModel {
+			t.Fatalf("%s should have model field (root model should propagate to new agents)", phase)
+		}
+		if m != "openai/gpt-5" {
+			t.Fatalf("%s model = %q, want %q", phase, m, "openai/gpt-5")
 		}
 	}
 
@@ -1154,7 +1160,7 @@ func TestInjectOpenCodeMultiModeExplicitAssignmentsDoNotSpread(t *testing.T) {
 		t.Fatal("opencode.json missing agent map")
 	}
 
-	// Explicitly assigned phase gets the model.
+	// Explicitly assigned phase gets the assigned model (TUI wins).
 	applyAgent, ok := agentMap["sdd-apply"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-apply agent not found or wrong type")
@@ -1163,13 +1169,14 @@ func TestInjectOpenCodeMultiModeExplicitAssignmentsDoNotSpread(t *testing.T) {
 		t.Fatalf("sdd-apply model = %q, want %q", m, "anthropic/claude-opus-4-6")
 	}
 
-	// Unassigned phase should NOT have a model field.
+	// Unassigned phase AND not pre-existing: should get root model (openai/gpt-5).
+	// The pre-existing config only had {"model":"openai/gpt-5"}, no agent entries.
 	initAgent, ok := agentMap["sdd-init"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-init agent not found or wrong type")
 	}
-	if _, hasModel := initAgent["model"]; hasModel {
-		t.Fatal("sdd-init should NOT have model field (not explicitly assigned)")
+	if m, _ := initAgent["model"].(string); m != "openai/gpt-5" {
+		t.Fatalf("sdd-init model = %q, want %q (root model should apply to unassigned new agents)", m, "openai/gpt-5")
 	}
 }
 
@@ -1216,6 +1223,136 @@ func TestInjectOpenCodeSingleModeDoesNotInjectModels(t *testing.T) {
 	// Root model should be preserved.
 	if m, _ := root["model"].(string); m != "openai/gpt-5" {
 		t.Fatalf("root model lost after merge: got %q", m)
+	}
+}
+
+// TestInjectOpenCodeMultiModePreservesExistingAgentModels verifies that
+// a pre-existing agent definition with an explicit model is not overwritten
+// by the root model, while a NEW agent (not yet in the user's config) gets
+// the root model as a default.
+func TestInjectOpenCodeMultiModePreservesExistingAgentModels(t *testing.T) {
+	home := t.TempDir()
+	mockNoPackageManager(t)
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Pre-existing config: root model + sdd-apply already defined with its own model.
+	existing := `{
+  "model": "openai/gpt-5",
+  "agent": {
+    "sdd-apply": {
+      "model": "anthropic/claude-opus-4-6",
+      "mode": "subagent"
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	if _, err := Inject(home, opencodeAdapter(), "multi"); err != nil {
+		t.Fatalf("Inject(multi) error = %v", err)
+	}
+
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent map")
+	}
+
+	// sdd-apply was pre-existing with its own model — must be preserved (NOT overwritten to gpt-5).
+	applyAgent, ok := agentMap["sdd-apply"].(map[string]any)
+	if !ok {
+		t.Fatal("sdd-apply agent not found or wrong type")
+	}
+	if m, _ := applyAgent["model"].(string); m != "anthropic/claude-opus-4-6" {
+		t.Fatalf("sdd-apply model = %q, want %q (pre-existing model must be preserved)", m, "anthropic/claude-opus-4-6")
+	}
+
+	// sdd-init was NOT pre-existing — should get root model as default.
+	initAgent, ok := agentMap["sdd-init"].(map[string]any)
+	if !ok {
+		t.Fatal("sdd-init agent not found or wrong type")
+	}
+	if m, _ := initAgent["model"].(string); m != "openai/gpt-5" {
+		t.Fatalf("sdd-init model = %q, want %q (new agent should get root model)", m, "openai/gpt-5")
+	}
+}
+
+// TestInjectOpenCodeMultiModeExistingAgentWithNoModelIsNotTouched verifies
+// that a pre-existing agent WITHOUT a model field is respected — the root model
+// is NOT injected for that agent. The user intentionally set up the agent
+// without a model (they may rely on per-project overrides or session context).
+func TestInjectOpenCodeMultiModeExistingAgentWithNoModelIsNotTouched(t *testing.T) {
+	home := t.TempDir()
+	mockNoPackageManager(t)
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Pre-existing config: root model + sdd-apply with NO model field.
+	existing := `{
+  "model": "openai/gpt-5",
+  "agent": {
+    "sdd-apply": {
+      "mode": "subagent"
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	if _, err := Inject(home, opencodeAdapter(), "multi"); err != nil {
+		t.Fatalf("Inject(multi) error = %v", err)
+	}
+
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent map")
+	}
+
+	// sdd-apply was pre-existing with NO model — the root model must NOT be injected.
+	// The user intentionally set up the agent without a model; respect that.
+	applyAgent, ok := agentMap["sdd-apply"].(map[string]any)
+	if !ok {
+		t.Fatal("sdd-apply agent not found or wrong type")
+	}
+	if _, hasModel := applyAgent["model"]; hasModel {
+		t.Fatalf("sdd-apply should NOT have model field (pre-existing agent without model, user intent must be respected)")
+	}
+
+	// sdd-init was NOT pre-existing — should get root model as default.
+	initAgent, ok := agentMap["sdd-init"].(map[string]any)
+	if !ok {
+		t.Fatal("sdd-init agent not found or wrong type")
+	}
+	if m, _ := initAgent["model"].(string); m != "openai/gpt-5" {
+		t.Fatalf("sdd-init model = %q, want %q (new agent should get root model)", m, "openai/gpt-5")
 	}
 }
 
@@ -1745,7 +1882,7 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 		"sdd-init": {ProviderID: "anthropic", ModelID: "claude-sonnet-4-20250514"},
 	}
 
-	result, err := injectModelAssignments(overlayJSON, assignments, "")
+	result, err := injectModelAssignments(overlayJSON, assignments, "", nil)
 	if err != nil {
 		t.Fatalf("injectModelAssignments() error = %v", err)
 	}

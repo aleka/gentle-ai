@@ -148,8 +148,21 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				assignments = nil
 			}
 
-			if sddMode == model.SDDModeMulti && len(assignments) > 0 {
-				overlayBytes, err = injectModelAssignments(overlayBytes, assignments, "")
+			var rootModelID string
+			var existingAgentKeys map[string]bool
+			if sddMode == model.SDDModeMulti {
+				rootModelID, err = readOpenCodeRootModel(settingsPath)
+				if err != nil {
+					return InjectionResult{}, err
+				}
+				existingAgentKeys, err = readExistingAgentModels(settingsPath)
+				if err != nil {
+					return InjectionResult{}, err
+				}
+			}
+
+			if sddMode == model.SDDModeMulti && (len(assignments) > 0 || rootModelID != "") {
+				overlayBytes, err = injectModelAssignments(overlayBytes, assignments, rootModelID, existingAgentKeys)
 				if err != nil {
 					return InjectionResult{}, fmt.Errorf("inject model assignments: %w", err)
 				}
@@ -722,9 +735,17 @@ func renderClaudeModelAssignmentsSection(assignments map[string]model.ClaudeMode
 
 // injectModelAssignments injects "model" fields into sub-agent definitions
 // within the overlay JSON before it is merged into the settings file.
-// Only explicit user-chosen assignments are written; there is no fallback
-// that would overwrite models the user already configured in opencode.json.
-func injectModelAssignments(overlayBytes []byte, assignments map[string]model.ModelAssignment, _ string) ([]byte, error) {
+//
+// Decision tree for EACH sub-agent:
+//  1. TUI assignment exists for this agent → use it (always wins)
+//  2. Agent already exists as a key in the user's existing opencode.json
+//     (existingAgentKeys) → skip; let the deep merge preserve whatever the
+//     user already has (including no model at all — that's intentional)
+//  3. Neither of the above AND rootModelID is set → inject rootModelID so the
+//     agent does not silently inherit the orchestrator model at runtime
+//
+// If none of the above conditions apply, nothing is written for that agent.
+func injectModelAssignments(overlayBytes []byte, assignments map[string]model.ModelAssignment, rootModelID string, existingAgentKeys map[string]bool) ([]byte, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal(overlayBytes, &overlay); err != nil {
 		return nil, fmt.Errorf("unmarshal overlay for model injection: %w", err)
@@ -739,19 +760,25 @@ func injectModelAssignments(overlayBytes []byte, assignments map[string]model.Mo
 		return overlayBytes, nil
 	}
 
-	for phase, assignment := range assignments {
-		if assignment.ProviderID == "" || assignment.ModelID == "" {
-			continue
-		}
-		agentDef, exists := agents[phase]
-		if !exists {
-			continue
-		}
+	for phase, agentDef := range agents {
 		agentMap, ok := agentDef.(map[string]any)
 		if !ok {
 			continue
 		}
-		agentMap["model"] = assignment.FullID()
+
+		assignment, hasExplicitAssignment := assignments[phase]
+
+		switch {
+		case hasExplicitAssignment && assignment.ProviderID != "" && assignment.ModelID != "":
+			// 1. TUI choice always wins
+			agentMap["model"] = assignment.FullID()
+		case existingAgentKeys[phase]:
+			// 2. Agent already exists in user's config — let merge preserve whatever they have
+			// (don't touch the overlay for this agent's model)
+		case rootModelID != "":
+			// 3. Fresh install or new agent: use root model as default to break inheritance
+			agentMap["model"] = rootModelID
+		}
 	}
 
 	result, err := json.MarshalIndent(overlay, "", "  ")
@@ -759,6 +786,60 @@ func injectModelAssignments(overlayBytes []byte, assignments map[string]model.Mo
 		return nil, fmt.Errorf("marshal overlay after model injection: %w", err)
 	}
 	return append(result, '\n'), nil
+}
+
+// readOpenCodeRootModel reads the top-level "model" field from the opencode.json
+// at path. Returns empty string if the file does not exist or has no model field.
+func readOpenCodeRootModel(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read opencode root model from %q: %w", path, err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return "", nil
+	}
+
+	rootModelID, _ := root["model"].(string)
+	return rootModelID, nil
+}
+
+// readExistingAgentModels reads opencode.json at path and returns a set of
+// agent names that already exist as keys under the "agent" map, regardless of
+// whether those agents have a "model" field. Returns an empty map if the file
+// does not exist or has no "agent" key.
+func readExistingAgentModels(path string) (map[string]bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]bool{}, nil
+		}
+		return nil, fmt.Errorf("read existing agent keys from %q: %w", path, err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return map[string]bool{}, nil
+	}
+
+	agentRaw, ok := root["agent"]
+	if !ok {
+		return map[string]bool{}, nil
+	}
+	agentMap, ok := agentRaw.(map[string]any)
+	if !ok {
+		return map[string]bool{}, nil
+	}
+
+	result := make(map[string]bool, len(agentMap))
+	for name := range agentMap {
+		result[name] = true
+	}
+	return result, nil
 }
 
 func readFileOrEmpty(path string) (string, error) {
