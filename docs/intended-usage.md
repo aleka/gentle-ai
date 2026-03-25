@@ -59,7 +59,17 @@ The curated skill library (React 19, Angular, TypeScript, testing patterns, etc.
 
 You don't need to activate, invoke, or even think about them.
 
-**One exception: the skill registry.** After installing gentle-ai (or after adding/removing skills), it's a good idea to run `/skill-registry` in your agent. This builds a catalog of all available skills so the orchestrator knows exactly what's available and where. You only need to do it once per setup change -- after that, the agent uses it automatically.
+**One exception: the skill registry.** The skill registry is a catalog of all available skills that the orchestrator reads once per session to know what's available and where. It needs to run **inside each project** you work on, because it also scans for project-level conventions (like `CLAUDE.md`, `agents.md`, `.cursorrules`, etc.).
+
+How it works:
+
+1. **Run `/skill-registry` inside your project** -- it scans all your installed skills (user-level and project-level), reads their frontmatter, and builds a registry at `.atl/skill-registry.md`. If engram is available, it also saves the registry to memory for cross-session access.
+2. **The orchestrator uses it automatically** -- once the registry exists, the orchestrator reads it at session start and passes pre-resolved skill paths to sub-agents. You don't interact with the registry after that.
+3. **Re-run it when things change** -- any time you add, remove, or modify a skill, run `/skill-registry` again so the orchestrator picks up the changes.
+
+There's also an automated side: `sdd-init` runs the same registry logic internally, so if you use SDD in a new project, the registry gets built as part of that flow.
+
+**Pro tip**: If you find yourself updating skills often, you can create a skill (using `/skill-creator`) that automatically triggers a registry update after skill changes -- that way you never have to think about it.
 
 ---
 
