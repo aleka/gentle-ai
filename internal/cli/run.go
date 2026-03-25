@@ -221,12 +221,13 @@ func buildStagePlan(selection model.Selection, resolved planner.ResolvedPlan) pi
 }
 
 type installRuntime struct {
-	homeDir    string
-	selection  model.Selection
-	resolved   planner.ResolvedPlan
-	profile    system.PlatformProfile
-	backupRoot string
-	state      *runtimeState
+	homeDir      string
+	workspaceDir string
+	selection    model.Selection
+	resolved     planner.ResolvedPlan
+	profile      system.PlatformProfile
+	backupRoot   string
+	state        *runtimeState
 }
 
 type runtimeState struct {
@@ -239,13 +240,16 @@ func newInstallRuntime(homeDir string, selection model.Selection, resolved plann
 		return nil, fmt.Errorf("create backup root directory %q: %w", backupRoot, err)
 	}
 
+	workspaceDir, _ := os.Getwd()
+
 	return &installRuntime{
-		homeDir:    homeDir,
-		selection:  selection,
-		resolved:   resolved,
-		profile:    profile,
-		backupRoot: backupRoot,
-		state:      &runtimeState{},
+		homeDir:      homeDir,
+		workspaceDir: workspaceDir,
+		selection:    selection,
+		resolved:     resolved,
+		profile:      profile,
+		backupRoot:   backupRoot,
+		state:        &runtimeState{},
 	}, nil
 }
 
@@ -274,12 +278,13 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 
 	for _, component := range r.resolved.OrderedComponents {
 		apply = append(apply, componentApplyStep{
-			id:        "component:" + string(component),
-			component: component,
-			homeDir:   r.homeDir,
-			agents:    r.resolved.Agents,
-			selection: r.selection,
-			profile:   r.profile,
+			id:           "component:" + string(component),
+			component:    component,
+			homeDir:      r.homeDir,
+			workspaceDir: r.workspaceDir,
+			agents:       r.resolved.Agents,
+			selection:    r.selection,
+			profile:      r.profile,
 		})
 	}
 
@@ -390,12 +395,13 @@ func (s agentInstallStep) Run() error {
 }
 
 type componentApplyStep struct {
-	id        string
-	component model.ComponentID
-	homeDir   string
-	agents    []model.AgentID
-	selection model.Selection
-	profile   system.PlatformProfile
+	id           string
+	component    model.ComponentID
+	homeDir      string
+	workspaceDir string
+	agents       []model.AgentID
+	selection    model.Selection
+	profile      system.PlatformProfile
 }
 
 func (s componentApplyStep) ID() string {
@@ -489,6 +495,7 @@ func (s componentApplyStep) Run() error {
 			opts := sdd.InjectOptions{
 				OpenCodeModelAssignments: s.selection.ModelAssignments,
 				ClaudeModelAssignments:   s.selection.ClaudeModelAssignments,
+				WorkspaceDir:             s.workspaceDir,
 			}
 			if _, err := sdd.Inject(s.homeDir, adapter, s.selection.SDDMode, opts); err != nil {
 				return fmt.Errorf("inject sdd for %q: %w", adapter.Agent(), err)
