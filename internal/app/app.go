@@ -137,11 +137,13 @@ func runUpgrade(ctx context.Context, args []string, detection system.DetectionRe
 	profile := cli.ResolveInstallProfile(detection)
 
 	// Check for available updates (filtered to requested tools if specified).
-	fmt.Fprintln(stdout, "  ⠹ Checking for updates...")
+	sp := upgrade.NewSpinner(stdout, "Checking for updates")
 	checkResults := updateCheckFiltered(ctx, Version, profile, toolFilter)
-	if err := updateCheckError(checkResults); err != nil {
+	checkErr := updateCheckError(checkResults)
+	sp.Finish(checkErr == nil)
+	if checkErr != nil {
 		_, _ = fmt.Fprint(stdout, update.RenderCLI(checkResults))
-		return err
+		return checkErr
 	}
 
 	// Execute upgrades (no-op if nothing is UpdateAvailable).
