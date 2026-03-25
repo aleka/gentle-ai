@@ -448,6 +448,38 @@ async function parseAgentWriteCapability(
 }
 
 /**
+ * Resolve the model configured for a given agent.
+ * Parses the "provider/model-id" format into the shape session.prompt() expects.
+ * Returns undefined when no model is configured (caller falls back to default).
+ */
+async function resolveAgentModel(
+  client: OpencodeClient,
+  agentName: string,
+  log: Logger,
+): Promise<{ providerID: string; modelID: string } | undefined> {
+  try {
+    const config = await client.config.get()
+    const configData = config.data as {
+      agent?: Record<string, { model?: string }>
+    } | undefined
+
+    const modelStr = configData?.agent?.[agentName]?.model
+    if (!modelStr) return undefined
+
+    const slashIndex = modelStr.indexOf("/")
+    if (slashIndex === -1) return undefined
+
+    const providerID = modelStr.substring(0, slashIndex)
+    const modelID = modelStr.substring(slashIndex + 1)
+
+    await log.info(`resolveAgentModel: ${agentName} → ${providerID}/${modelID}`)
+    return { providerID, modelID }
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * DELEGATION MANAGER
  */
 class DelegationManager {
@@ -608,6 +640,9 @@ class DelegationManager {
     // Ensure delegations directory exists (early check)
     await this.ensureDelegationsDir(input.parentSessionID)
 
+    // Resolve the agent's configured model so sub-agents use their own model, not the orchestrator's
+    const agentModel = await resolveAgentModel(this.client, input.agent, this.log)
+
     // Fire the prompt (using prompt() instead of promptAsync() to properly initialize agent loop)
     // Agent param is critical for MCP tools - tells OpenCode which agent's config to use
     // Anti-recursion: disable nested delegations and state-modifying tools via tools config
@@ -616,6 +651,7 @@ class DelegationManager {
         path: { id: delegation.sessionID },
         body: {
           agent: input.agent,
+          ...(agentModel && { model: agentModel }),
           parts: [{ type: "text", text: input.prompt }],
           tools: {
             task: false,
