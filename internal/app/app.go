@@ -54,6 +54,13 @@ func RunArgs(args []string, stdout io.Writer) error {
 		return system.EnsureSupportedPlatform(result.System.Profile)
 	}
 
+	// Self-update: check for a newer gentle-ai release and apply it before
+	// CLI/TUI dispatch. Errors are non-fatal — logged and swallowed.
+	profile := cli.ResolveInstallProfile(result)
+	if err := selfUpdate(context.Background(), Version, profile, stdout); err != nil {
+		_, _ = fmt.Fprintf(stdout, "Warning: self-update failed: %v\n", err)
+	}
+
 	if len(args) == 0 {
 		m := tui.NewModel(result, Version)
 		m.ExecuteFn = tuiExecute
