@@ -2193,6 +2193,128 @@ func TestInjectOpenCodeMultiModeWithPreExistingFullConfig(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// gentleman agent model mirroring from sdd-orchestrator
+// ---------------------------------------------------------------------------
+
+// TestInjectOpenCodeMultiModeMirrorsOrchestratorModelToGentleman verifies that
+// when sdd-orchestrator has an explicit TUI model assignment and the gentleman
+// agent already exists in opencode.json (persona installed), the orchestrator
+// model is mirrored to the gentleman agent.
+func TestInjectOpenCodeMultiModeMirrorsOrchestratorModelToGentleman(t *testing.T) {
+	home := t.TempDir()
+	mockNoPackageManager(t)
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Pre-existing opencode.json with gentleman agent (persona installed).
+	existing := `{
+  "agent": {
+    "gentleman": {
+      "mode": "primary"
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	assignments := map[string]model.ModelAssignment{
+		"sdd-orchestrator": {ProviderID: "openai", ModelID: "gpt-4o"},
+	}
+
+	result, err := Inject(home, opencodeAdapter(), "multi", InjectOptions{OpenCodeModelAssignments: assignments})
+	if err != nil {
+		t.Fatalf("Inject(multi, assignments) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(multi, assignments) changed = false")
+	}
+
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent map")
+	}
+
+	// sdd-orchestrator must have the assigned model.
+	orchAgent, ok := agentMap["sdd-orchestrator"].(map[string]any)
+	if !ok {
+		t.Fatal("sdd-orchestrator agent not found or wrong type")
+	}
+	if m, _ := orchAgent["model"].(string); m != "openai/gpt-4o" {
+		t.Fatalf("sdd-orchestrator model = %q, want %q", m, "openai/gpt-4o")
+	}
+
+	// gentleman must have the same model as sdd-orchestrator (mirrored).
+	gentlemanAgent, ok := agentMap["gentleman"].(map[string]any)
+	if !ok {
+		t.Fatal("gentleman agent not found or wrong type")
+	}
+	if m, _ := gentlemanAgent["model"].(string); m != "openai/gpt-4o" {
+		t.Fatalf("gentleman model = %q, want %q (should mirror sdd-orchestrator)", m, "openai/gpt-4o")
+	}
+}
+
+// TestInjectOpenCodeMultiModeDoesNotInjectGentlemanIfNotInstalled verifies that
+// when the gentleman agent does NOT exist in opencode.json (persona not installed),
+// the orchestrator model is NOT mirrored to a gentleman entry.
+func TestInjectOpenCodeMultiModeDoesNotInjectGentlemanIfNotInstalled(t *testing.T) {
+	home := t.TempDir()
+	mockNoPackageManager(t)
+
+	// No pre-existing opencode.json — fresh install, persona not installed.
+	assignments := map[string]model.ModelAssignment{
+		"sdd-orchestrator": {ProviderID: "openai", ModelID: "gpt-4o"},
+	}
+
+	result, err := Inject(home, opencodeAdapter(), "multi", InjectOptions{OpenCodeModelAssignments: assignments})
+	if err != nil {
+		t.Fatalf("Inject(multi, assignments) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(multi, assignments) changed = false")
+	}
+
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	content, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", err)
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+
+	agentMap, ok := root["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("opencode.json missing agent map")
+	}
+
+	// gentleman must NOT appear — persona is not installed.
+	if gentlemanRaw, exists := agentMap["gentleman"]; exists {
+		// If it somehow exists, it must not have a model field.
+		if gentlemanMap, ok := gentlemanRaw.(map[string]any); ok {
+			if _, hasModel := gentlemanMap["model"]; hasModel {
+				t.Fatal("gentleman should NOT have a model field when persona is not installed")
+			}
+		}
+	}
+}
+
 // TestMergeJSONFileReturnsMergedBytes verifies that mergeJSONFile returns the
 // merged bytes in-memory, so callers never need to re-read from disk to
 // validate the result (the fix for the Windows/WSL2 post-check bug).

@@ -781,6 +781,22 @@ func injectModelAssignments(overlayBytes []byte, assignments map[string]model.Mo
 		}
 	}
 
+	// Mirror sdd-orchestrator model to gentleman — both are primary conductors in OpenCode.
+	// gentleman is defined by the persona overlay (not the SDD overlay), so we inject
+	// its model field here to prevent silent runtime inheritance.
+	// Guard: only inject if gentleman already exists in opencode.json (persona was installed)
+	// and sdd-orchestrator has an explicit TUI assignment.
+	if orchAssignment, hasOrch := assignments["sdd-orchestrator"]; hasOrch &&
+		orchAssignment.ProviderID != "" && orchAssignment.ModelID != "" &&
+		existingAgentKeys["gentleman"] {
+		if _, exists := agents["gentleman"]; !exists {
+			agents["gentleman"] = map[string]any{}
+		}
+		if gentlemanMap, ok := agents["gentleman"].(map[string]any); ok {
+			gentlemanMap["model"] = orchAssignment.FullID()
+		}
+	}
+
 	result, err := json.MarshalIndent(overlay, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal overlay after model injection: %w", err)
