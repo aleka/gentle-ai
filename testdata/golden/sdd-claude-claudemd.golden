@@ -54,7 +54,7 @@ The default is `delegate`. You need a REASON to use `task`.
 |------|--------|
 | Simple question | Answer if known, else delegate (async) |
 | Small task | delegate to sub-agent (async) |
-| Substantial feature | Suggest SDD: `/sdd-new {name}`, then delegate phases (async) |
+| Substantial feature | Initiate SDD automatically: run `sdd-explore` then `sdd-propose`, delegate phases (async). If the user explicitly asks for SDD ("hazlo con sdd", "use sdd"), start immediately |
 
 ---
 
@@ -73,19 +73,23 @@ SDD is the structured planning layer for substantial changes.
 
 ### Commands
 
-#### Skills (appear in autocomplete)
-- `/sdd-init` -> Initialize SDD context. Detects stack, bootstraps persistence
-- `/sdd-explore <topic>` -> Investigate an idea. Reads codebase, compares approaches. No files created
-- `/sdd-apply [change]` -> Implement tasks in batches. Checks off items as it goes
-- `/sdd-verify [change]` -> Validate implementation against specs. Reports CRITICAL / WARNING / SUGGESTION
-- `/sdd-archive [change]` -> Close a change and persist final state in the active artifact store
+These commands are for YOU (the orchestrator) to use internally. Users do NOT need to know or type these — you invoke them organically based on the task size.
 
-#### Meta-commands (type them directly — the orchestrator handles them, they won't appear in autocomplete)
-- `/sdd-new <change>` -> Start a new change by delegating exploration + proposal to sub-agents
-- `/sdd-continue [change]` -> Run the next dependency-ready phase via sub-agent(s)
-- `/sdd-ff <name>` -> Fast-forward planning with sub-agents (proposal → specs → design → tasks)
+#### Phase skills (invoke via sub-agents)
+- `sdd-init` -> Initialize SDD context. Detects stack, bootstraps persistence
+- `sdd-explore <topic>` -> Investigate an idea. Reads codebase, compares approaches
+- `sdd-propose <change>` -> Create a change proposal with intent, scope, approach
+- `sdd-spec <change>` -> Write specifications with requirements and scenarios
+- `sdd-design <change>` -> Create technical design with architecture decisions
+- `sdd-tasks <change>` -> Break down into implementation task checklist
+- `sdd-apply <change>` -> Implement tasks in batches. Checks off items as it goes
+- `sdd-verify <change>` -> Validate implementation against specs
+- `sdd-archive <change>` -> Close a change and persist final state
 
-> `/sdd-new`, `/sdd-continue`, and `/sdd-ff` are meta-commands handled by YOU (the orchestrator). Do NOT invoke them as skills.
+#### Orchestration flows (you compose these from the skills above)
+- **New change**: run `sdd-explore` then `sdd-propose`
+- **Continue**: create next missing artifact in the dependency chain
+- **Fast-forward**: run `sdd-propose` → `sdd-spec` → `sdd-design` → `sdd-tasks`
 
 ### Dependency Graph
 ```
