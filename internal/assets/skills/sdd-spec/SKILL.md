@@ -56,7 +56,12 @@ From the orchestrator:
 
 ### Step 1: Load Skills
 
-The orchestrator provides your skill path in the launch prompt. Load it now. If no path was provided, proceed without additional skills.
+1. Check if the orchestrator provided a `SKILL: Load` instruction in your launch prompt. If yes, load that skill.
+2. If no skill path was provided, search for the skill registry yourself:
+   a. Try: `mem_search(query: "skill-registry", project: "{project}")` — if found, `mem_get_observation(id)` for full content
+   b. Fallback: read `.atl/skill-registry.md` if it exists
+3. From the registry, load any skills whose triggers match your current task.
+4. If no registry exists, proceed with your phase skill only.
 
 > Read `skills/_shared/sdd-phase-common.md` for the engram upsert note and return envelope format.
 
