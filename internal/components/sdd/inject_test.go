@@ -775,13 +775,11 @@ func TestInjectOpenCodeSingleToMultiSwitch(t *testing.T) {
 		t.Fatal("single mode should have sdd-apply")
 	}
 
-	// Second: inject multi mode — should add model fields.
-	result, err := Inject(home, opencodeAdapter(), "multi")
+	// Second: inject multi mode — structure stays the same (both have all agents),
+	// but the overlay content (prompts) may differ so changed can be true or false.
+	_, err = Inject(home, opencodeAdapter(), "multi")
 	if err != nil {
 		t.Fatalf("Inject(multi) error = %v", err)
-	}
-	if !result.Changed {
-		t.Fatal("switching from single to multi should produce changed=true")
 	}
 
 	content, err = os.ReadFile(settingsPath)
@@ -802,13 +800,13 @@ func TestInjectOpenCodeSingleToMultiSwitch(t *testing.T) {
 		t.Fatal("missing sdd-apply after switch to multi")
 	}
 
-	// Multi mode should have model fields (from the overlay).
+	// Without explicit assignments, no model fields should be injected.
 	applyAgent, ok := agentMap["sdd-apply"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-apply has unexpected type after switch to multi")
 	}
-	if _, hasModel := applyAgent["model"]; !hasModel {
-		t.Fatal("sdd-apply should have model field after switch to multi")
+	if _, hasModel := applyAgent["model"]; hasModel {
+		t.Fatal("sdd-apply should NOT have model field without explicit assignments")
 	}
 }
 
@@ -994,13 +992,14 @@ func TestInjectOpenCodeMultiModeWithModelAssignments(t *testing.T) {
 		t.Fatalf("sdd-apply model = %q, want %q", m, "openai/gpt-4o")
 	}
 
-	// Unassigned phases keep their default model from the multi overlay.
+	// Unassigned phases should NOT have a model field — the overlay no longer
+	// hardcodes defaults, so only explicitly assigned phases get a model.
 	verifyAgent, ok := agentMap["sdd-verify"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-verify agent not found or wrong type")
 	}
-	if m, _ := verifyAgent["model"].(string); m != "anthropic/claude-opus-4-6" {
-		t.Fatalf("sdd-verify model = %q, want default %q", m, "anthropic/claude-opus-4-6")
+	if _, hasModel := verifyAgent["model"]; hasModel {
+		t.Fatal("sdd-verify should not have a model field (unassigned phase)")
 	}
 }
 
@@ -1029,15 +1028,15 @@ func TestInjectOpenCodeMultiModeNoAssignmentsNoModel(t *testing.T) {
 	}
 
 	agentMap, _ := root["agent"].(map[string]any)
-	// Multi overlay now includes default model fields for all agents.
-	// When no assignments are given, the defaults from the overlay are preserved.
+	// When no assignments are given, no model fields should be injected.
+	// The overlay itself no longer contains hardcoded models.
 	for _, phase := range []string{"sdd-init", "sdd-apply", "sdd-verify"} {
 		agentDef, ok := agentMap[phase].(map[string]any)
 		if !ok {
 			t.Fatalf("phase %q agent not found or wrong type", phase)
 		}
-		if _, hasModel := agentDef["model"]; !hasModel {
-			t.Fatalf("phase %q should have default model field from multi overlay", phase)
+		if _, hasModel := agentDef["model"]; hasModel {
+			t.Fatalf("phase %q should NOT have model field when no assignments given", phase)
 		}
 	}
 }
@@ -1102,18 +1101,25 @@ func TestInjectOpenCodeMultiModeUsesRootModelForUnassignedAgents(t *testing.T) {
 		t.Fatal("opencode.json missing agent map")
 	}
 
+	// With no explicit assignments, sub-agents should NOT get model fields.
+	// The overlay no longer hardcodes models, and root model is not propagated.
 	for _, phase := range []string{"sdd-orchestrator", "sdd-init", "sdd-verify"} {
 		agentDef, ok := agentMap[phase].(map[string]any)
 		if !ok {
 			t.Fatalf("phase %q agent not found or wrong type", phase)
 		}
-		if m, _ := agentDef["model"].(string); m != "openai/gpt-5" {
-			t.Fatalf("%s model = %q, want %q", phase, m, "openai/gpt-5")
+		if _, hasModel := agentDef["model"]; hasModel {
+			t.Fatalf("%s should NOT have model field (no explicit assignments)", phase)
 		}
+	}
+
+	// The root-level "model" should still be preserved.
+	if m, _ := root["model"].(string); m != "openai/gpt-5" {
+		t.Fatalf("root model lost after merge: got %q", m)
 	}
 }
 
-func TestInjectOpenCodeMultiModeExplicitAssignmentsOverrideRootModel(t *testing.T) {
+func TestInjectOpenCodeMultiModeExplicitAssignmentsDoNotSpread(t *testing.T) {
 	home := t.TempDir()
 	mockNoPackageManager(t)
 
@@ -1148,6 +1154,7 @@ func TestInjectOpenCodeMultiModeExplicitAssignmentsOverrideRootModel(t *testing.
 		t.Fatal("opencode.json missing agent map")
 	}
 
+	// Explicitly assigned phase gets the model.
 	applyAgent, ok := agentMap["sdd-apply"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-apply agent not found or wrong type")
@@ -1156,16 +1163,17 @@ func TestInjectOpenCodeMultiModeExplicitAssignmentsOverrideRootModel(t *testing.
 		t.Fatalf("sdd-apply model = %q, want %q", m, "anthropic/claude-opus-4-6")
 	}
 
+	// Unassigned phase should NOT have a model field.
 	initAgent, ok := agentMap["sdd-init"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-init agent not found or wrong type")
 	}
-	if m, _ := initAgent["model"].(string); m != "openai/gpt-5" {
-		t.Fatalf("sdd-init model = %q, want %q", m, "openai/gpt-5")
+	if _, hasModel := initAgent["model"]; hasModel {
+		t.Fatal("sdd-init should NOT have model field (not explicitly assigned)")
 	}
 }
 
-func TestInjectOpenCodeSingleModeUsesRootModelForAgents(t *testing.T) {
+func TestInjectOpenCodeSingleModeDoesNotInjectModels(t *testing.T) {
 	home := t.TempDir()
 	mockNoPackageManager(t)
 
@@ -1196,12 +1204,18 @@ func TestInjectOpenCodeSingleModeUsesRootModelForAgents(t *testing.T) {
 		t.Fatal("opencode.json missing agent map")
 	}
 
+	// Single mode should NOT inject model fields into sub-agents.
 	initAgent, ok := agentMap["sdd-init"].(map[string]any)
 	if !ok {
 		t.Fatal("sdd-init agent not found or wrong type")
 	}
-	if m, _ := initAgent["model"].(string); m != "openai/gpt-5" {
-		t.Fatalf("sdd-init model = %q, want %q", m, "openai/gpt-5")
+	if _, hasModel := initAgent["model"]; hasModel {
+		t.Fatal("sdd-init should NOT have model field in single mode")
+	}
+
+	// Root model should be preserved.
+	if m, _ := root["model"].(string); m != "openai/gpt-5" {
+		t.Fatalf("root model lost after merge: got %q", m)
 	}
 }
 
@@ -1723,7 +1737,7 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 	overlayJSON := []byte(`{
   "agent": {
     "sdd-init": {"mode": "subagent", "prompt": "test"},
-    "sdd-apply": {"mode": "subagent", "prompt": "test", "model": "anthropic/claude-sonnet-4-6"}
+    "sdd-apply": {"mode": "subagent", "prompt": "test"}
   }
 }`)
 
@@ -1731,7 +1745,7 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 		"sdd-init": {ProviderID: "anthropic", ModelID: "claude-sonnet-4-20250514"},
 	}
 
-	result, err := injectModelAssignments(overlayJSON, assignments, "openai/gpt-5")
+	result, err := injectModelAssignments(overlayJSON, assignments, "")
 	if err != nil {
 		t.Fatalf("injectModelAssignments() error = %v", err)
 	}
@@ -1747,10 +1761,10 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 		t.Fatalf("sdd-init model = %q, want %q", m, "anthropic/claude-sonnet-4-20250514")
 	}
 
-	// sdd-apply should inherit the root model when unassigned.
+	// sdd-apply has no assignment — should NOT get a model field.
 	applyAgent := agents["sdd-apply"].(map[string]any)
-	if m, _ := applyAgent["model"].(string); m != "openai/gpt-5" {
-		t.Fatalf("sdd-apply model = %q, want %q", m, "openai/gpt-5")
+	if _, hasModel := applyAgent["model"]; hasModel {
+		t.Fatal("sdd-apply should not have a model field (no assignment)")
 	}
 }
 
