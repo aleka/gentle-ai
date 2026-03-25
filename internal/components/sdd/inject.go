@@ -134,6 +134,10 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			}
 
 			// Inject model assignments into the overlay before merging.
+			// Models are ONLY written when the user explicitly chose them via
+			// the TUI model picker (multi-mode). The overlay JSON itself must
+			// NOT contain model fields — otherwise the deep merge overwrites
+			// whatever the user already has in opencode.json.
 			overlayBytes := []byte(overlayContent)
 			overlayBytes, err = inlineOpenCodeSDDPrompts(overlayBytes)
 			if err != nil {
@@ -144,12 +148,8 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				assignments = nil
 			}
 
-			rootModelID, err := readOpenCodeRootModel(settingsPath)
-			if err != nil {
-				return InjectionResult{}, err
-			}
-			if rootModelID != "" || len(assignments) > 0 {
-				overlayBytes, err = injectModelAssignments(overlayBytes, assignments, rootModelID)
+			if sddMode == model.SDDModeMulti && len(assignments) > 0 {
+				overlayBytes, err = injectModelAssignments(overlayBytes, assignments, "")
 				if err != nil {
 					return InjectionResult{}, fmt.Errorf("inject model assignments: %w", err)
 				}
@@ -722,7 +722,9 @@ func renderClaudeModelAssignmentsSection(assignments map[string]model.ClaudeMode
 
 // injectModelAssignments injects "model" fields into sub-agent definitions
 // within the overlay JSON before it is merged into the settings file.
-func injectModelAssignments(overlayBytes []byte, assignments map[string]model.ModelAssignment, rootModelID string) ([]byte, error) {
+// Only explicit user-chosen assignments are written; there is no fallback
+// that would overwrite models the user already configured in opencode.json.
+func injectModelAssignments(overlayBytes []byte, assignments map[string]model.ModelAssignment, _ string) ([]byte, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal(overlayBytes, &overlay); err != nil {
 		return nil, fmt.Errorf("unmarshal overlay for model injection: %w", err)
@@ -737,19 +739,19 @@ func injectModelAssignments(overlayBytes []byte, assignments map[string]model.Mo
 		return overlayBytes, nil
 	}
 
-	for phase, agentDef := range agents {
+	for phase, assignment := range assignments {
+		if assignment.ProviderID == "" || assignment.ModelID == "" {
+			continue
+		}
+		agentDef, exists := agents[phase]
+		if !exists {
+			continue
+		}
 		agentMap, ok := agentDef.(map[string]any)
 		if !ok {
 			continue
 		}
-
-		assignment, hasExplicitAssignment := assignments[phase]
-		switch {
-		case hasExplicitAssignment && assignment.ProviderID != "" && assignment.ModelID != "":
-			agentMap["model"] = assignment.FullID()
-		case rootModelID != "":
-			agentMap["model"] = rootModelID
-		}
+		agentMap["model"] = assignment.FullID()
 	}
 
 	result, err := json.MarshalIndent(overlay, "", "  ")
@@ -757,24 +759,6 @@ func injectModelAssignments(overlayBytes []byte, assignments map[string]model.Mo
 		return nil, fmt.Errorf("marshal overlay after model injection: %w", err)
 	}
 	return append(result, '\n'), nil
-}
-
-func readOpenCodeRootModel(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read opencode root model from %q: %w", path, err)
-	}
-
-	root := map[string]any{}
-	if err := json.Unmarshal(data, &root); err != nil {
-		return "", nil
-	}
-
-	rootModelID, _ := root["model"].(string)
-	return rootModelID, nil
 }
 
 func readFileOrEmpty(path string) (string, error) {

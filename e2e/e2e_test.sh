@@ -1493,7 +1493,6 @@ test_oc_sdd_multi_mode_injection() {
         assert_file_contains "$settings" '"sdd-tasks"' "Has sdd-tasks sub-agent"
         assert_file_contains "$settings" '"sdd-archive"' "Has sdd-archive sub-agent"
         assert_file_contains "$settings" '"subagent"' "Sub-agents have mode subagent"
-        assert_file_contains "$settings" '"model"' "Multi mode: has model overrides"
         assert_file_contains "$settings" '"delegate"' "Has delegate tool"
         assert_file_contains "$settings" '"delegation_read"' "Has delegation_read tool"
         assert_file_contains "$settings" '"delegation_list"' "Has delegation_list tool"
