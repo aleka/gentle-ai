@@ -168,22 +168,34 @@ func TestEmbeddedAssetCount(t *testing.T) {
 	}
 }
 
-func TestSDDPhaseCommonForbidsRegistrySelfLookupAndDelegation(t *testing.T) {
+func TestSDDPhaseCommonEnforcesExecutorBoundary(t *testing.T) {
 	content := MustRead("skills/_shared/sdd-phase-common.md")
 
+	// Must enforce executor boundary — no delegation allowed.
 	for _, want := range []string{
 		"EXECUTOR, not an orchestrator",
 		"Do NOT launch sub-agents",
-		"Do NOT search for the skill registry yourself",
-		"Registry resolution is orchestrator-only work",
+		"do NOT call `delegate`/`task`",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("sdd-phase-common missing %q", want)
+			t.Fatalf("sdd-phase-common missing executor boundary rule %q", want)
 		}
 	}
 
-	if strings.Contains(content, `mem_search(query: "skill-registry"`) {
-		t.Fatal("sdd-phase-common should not instruct phase agents to search skill-registry themselves")
+	// Must instruct phase agents to search the skill registry themselves
+	// when no explicit skill path was provided — this is skill LOADING, not delegation.
+	if !strings.Contains(content, `mem_search(query: "skill-registry"`) {
+		t.Fatal("sdd-phase-common must instruct phase agents to search skill-registry themselves for skill loading")
+	}
+
+	// Must NOT tell agents to launch sub-agents or delegate tasks.
+	for _, forbidden := range []string{
+		"launch a sub-agent",
+		"delegate this to",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("sdd-phase-common should not contain delegation instruction %q", forbidden)
+		}
 	}
 }
 
