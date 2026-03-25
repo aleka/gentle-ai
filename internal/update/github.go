@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -30,8 +31,9 @@ func fetchLatestRelease(ctx context.Context, owner, repo string) (githubRelease,
 	}
 
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "gentle-ai-update-check")
 
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
