@@ -250,6 +250,27 @@ func TestFetchLatestRelease_GithubToken(t *testing.T) {
 	}
 }
 
+// TestResolveGitHubToken_EnvVarWins verifies GITHUB_TOKEN takes precedence over gh CLI.
+func TestResolveGitHubToken_EnvVarWins(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "env-token")
+	if got := resolveGitHubToken(); got != "env-token" {
+		t.Fatalf("resolveGitHubToken() = %q, want %q", got, "env-token")
+	}
+}
+
+// TestResolveGitHubToken_EmptyWhenNoEnvAndNoGh verifies empty string returned when
+// GITHUB_TOKEN is unset and gh is not in PATH.
+func TestResolveGitHubToken_EmptyWhenNoEnvAndNoGh(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	origLookPath := ghLookPath
+	t.Cleanup(func() { ghLookPath = origLookPath })
+	ghLookPath = func(string) (string, error) { return "", fmt.Errorf("not found") }
+
+	if got := resolveGitHubToken(); got != "" {
+		t.Fatalf("resolveGitHubToken() = %q, want empty", got)
+	}
+}
+
 // --- TestCheckAll ---
 
 func TestCheckAll(t *testing.T) {
