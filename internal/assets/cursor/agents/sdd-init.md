@@ -26,8 +26,8 @@ Execute all steps from the skill directly in this context window:
 ## Engram Save (mandatory)
 
 After completing work, call `mem_save` with:
-- title: `"sdd-init/{project-name}"`
-- topic_key: `"sdd-init/{project-name}"`
+- title: `"sdd-init/{project}"`
+- topic_key: `"sdd-init/{project}"`
 - type: `"architecture"`
 - project: `{project-name from context}`
 

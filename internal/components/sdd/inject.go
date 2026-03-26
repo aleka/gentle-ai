@@ -47,6 +47,21 @@ type workflowInjector interface {
 	EmbeddedWorkflowsDir() string
 }
 
+// subAgentInjector is an optional adapter capability: if an adapter
+// implements this interface, sdd.Inject will copy the embedded sub-agent
+// markdown files into the user's home directory (e.g. ~/.cursor/agents/).
+// This intentionally does NOT extend agents.Adapter to avoid requiring all
+// adapters to implement no-op stubs.
+type subAgentInjector interface {
+	SupportsSubAgents() bool
+	// SubAgentsDir returns the target filesystem directory where sub-agent
+	// files should be written (e.g. <homeDir>/.cursor/agents/).
+	SubAgentsDir(homeDir string) string
+	// EmbeddedSubAgentsDir returns the path inside the embedded assets FS
+	// where this adapter's sub-agent sources live (e.g. "cursor/agents").
+	EmbeddedSubAgentsDir() string
+}
+
 // projectMarkers are filenames/dirs whose presence signals a valid project root.
 // We verify at least one exists before writing workspace-scoped files (like
 // native Windsurf workflows) to prevent accidentally polluting the user's
@@ -354,14 +369,9 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 	// implements the subAgentInjector optional interface). Sub-agent files are
 	// written to the user's home directory (e.g. ~/.cursor/agents/), not to the
 	// workspace, so no project-root detection is needed here.
-	type subAgentInjector interface {
-		SupportsSubAgents() bool
-		SubAgentsDir(homeDir string) string
-		EmbeddedSubAgentsDir() string
-	}
-
+	var agentsDir string
 	if sai, ok := adapter.(subAgentInjector); ok && sai.SupportsSubAgents() {
-		agentsDir := sai.SubAgentsDir(homeDir)
+		agentsDir = sai.SubAgentsDir(homeDir)
 		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 			return InjectionResult{}, fmt.Errorf("create agents dir: %w", err)
 		}
@@ -382,9 +392,17 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			if err != nil {
 				return InjectionResult{}, fmt.Errorf("write agent %s: %w", entry.Name(), err)
 			}
+			changed = changed || writeResult.Changed
 			if writeResult.Changed {
 				files = append(files, outPath)
-				changed = true
+			}
+		}
+
+		// Post-check: verify critical agent files exist
+		for _, phase := range []string{"sdd-apply", "sdd-verify"} {
+			checkPath := filepath.Join(agentsDir, phase+".md")
+			if info, err := os.Stat(checkPath); err != nil || info.Size() < 50 {
+				return InjectionResult{}, fmt.Errorf("post-check: cursor agent %q not written correctly", phase)
 			}
 		}
 	}

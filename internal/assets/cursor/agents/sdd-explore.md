@@ -6,6 +6,7 @@ description: >
   clarify requirements — before any proposal or spec is written.
 model: inherit
 readonly: true
+# readonly blocks filesystem writes only; MCP tools (mem_save) are still permitted
 background: false
 ---
 
