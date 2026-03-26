@@ -1,3 +1,4 @@
+<!-- gentle-ai:sdd-orchestrator -->
 # Spec-Driven Development (SDD) — Antigravity
 
 > Antigravity runs as a single agent. All SDD phases are executed sequentially
@@ -90,3 +91,4 @@ Convention files under `~/.gemini/antigravity/skills/_shared/` (global) or `.age
 | `engram` | `mem_search(...)` → `mem_get_observation(...)` |
 | `openspec` | read `openspec/changes/*/state.yaml` |
 | `none` | State not persisted — explain to user |
+<!-- /gentle-ai:sdd-orchestrator -->
