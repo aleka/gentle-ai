@@ -452,7 +452,7 @@ func TestInjectFileAppendSkipsIfAlreadyPresent(t *testing.T) {
 	}
 }
 
-func TestInjectFileAppendSkipsLegacyHeading(t *testing.T) {
+func TestInjectFileAppendMigratesLegacyHeading(t *testing.T) {
 	home := t.TempDir()
 
 	cursorAdapter, err := agents.NewAdapter("cursor")
@@ -484,8 +484,118 @@ func TestInjectFileAppendSkipsLegacyHeading(t *testing.T) {
 	}
 
 	text := string(content)
-	if strings.Count(text, "## Spec-Driven Development (SDD) Orchestrator") != 1 {
-		t.Fatal("legacy SDD heading duplicated")
+	if strings.Contains(text, "Already present.") {
+		t.Fatal("legacy SDD orchestrator content survived after migration")
+	}
+	if !strings.Contains(text, "<!-- gentle-ai:sdd-orchestrator -->") {
+		t.Fatal("missing open marker after migration")
+	}
+	if !strings.Contains(text, "<!-- /gentle-ai:sdd-orchestrator -->") {
+		t.Fatal("missing close marker after migration")
+	}
+	if strings.Count(text, "## Agent Teams Orchestrator") != 1 {
+		t.Fatal("agent teams heading duplicated after migration")
+	}
+	if !strings.Contains(text, "## Project Standards (auto-resolved)") {
+		t.Fatal("SDD orchestrator was not refreshed to current compact-rules format")
+	}
+}
+
+func TestInjectFileAppendMigratesFullLegacyOrchestratorBlock(t *testing.T) {
+	home := t.TempDir()
+
+	cursorAdapter, err := agents.NewAdapter("cursor")
+	if err != nil {
+		t.Fatalf("NewAdapter(cursor) error = %v", err)
+	}
+
+	promptPath := cursorAdapter.SystemPromptFile(home)
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	existing := "## Rules\n\nLegacy intro.\n\n" +
+		"## Agent Teams Orchestrator\n\n" +
+		"### Result Contract\n" +
+		"Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`.\n\n" +
+		"### Sub-Agent Launch Pattern\n\n" +
+		"SKILL: Load `{skill-path}` before starting.\n\n" +
+		"<!-- gentle-ai:engram-protocol -->\n" +
+		"## Engram Persistent Memory - Protocol\n" +
+		"<!-- /gentle-ai:engram-protocol -->\n"
+
+	if err := os.WriteFile(promptPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result, injectErr := Inject(home, cursorAdapter, "")
+	if injectErr != nil {
+		t.Fatalf("Inject() error = %v", injectErr)
+	}
+	if len(result.Files) == 0 {
+		t.Fatal("Inject() returned no files")
+	}
+
+	content, readErr := os.ReadFile(promptPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+
+	text := string(content)
+	if strings.Contains(text, "SKILL: Load `{skill-path}` before starting.") {
+		t.Fatal("legacy sub-agent launch content survived after migration")
+	}
+	if strings.Count(text, "### Result Contract") != 1 {
+		t.Fatal("result contract section duplicated after migration")
+	}
+	if !strings.Contains(text, "`skill_resolution`") {
+		t.Fatal("result contract was not refreshed to current format")
+	}
+	if !strings.Contains(text, "## Project Standards (auto-resolved)") {
+		t.Fatal("current compact-rules launch pattern missing after migration")
+	}
+	if strings.Count(text, "<!-- gentle-ai:engram-protocol -->") != 1 {
+		t.Fatal("engram protocol marker should be preserved exactly once")
+	}
+}
+
+func TestInjectFileAppendRemovesLegacyBlockWhenMarkedSectionAlreadyExists(t *testing.T) {
+	home := t.TempDir()
+
+	cursorAdapter, err := agents.NewAdapter("cursor")
+	if err != nil {
+		t.Fatalf("NewAdapter(cursor) error = %v", err)
+	}
+
+	promptPath := cursorAdapter.SystemPromptFile(home)
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	canonical := assets.MustRead("generic/sdd-orchestrator.md")
+	existing := "## Agent Teams Orchestrator\n\nLegacy duplicate block.\n\n" +
+		"<!-- gentle-ai:sdd-orchestrator -->\n" + canonical + "\n<!-- /gentle-ai:sdd-orchestrator -->\n"
+
+	if err := os.WriteFile(promptPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, injectErr := Inject(home, cursorAdapter, "")
+	if injectErr != nil {
+		t.Fatalf("Inject() error = %v", injectErr)
+	}
+
+	content, readErr := os.ReadFile(promptPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+
+	text := string(content)
+	if strings.Contains(text, "Legacy duplicate block.") {
+		t.Fatal("legacy duplicate block survived even with marked section present")
+	}
+	if strings.Count(text, "## Agent Teams Orchestrator") != 1 {
+		t.Fatal("orchestrator heading should exist exactly once after cleanup")
 	}
 }
 

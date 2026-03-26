@@ -536,12 +536,6 @@ func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, 
 		return InjectionResult{}, err
 	}
 
-	// If the SDD orchestrator section is already present (e.g., from the
-	// gentleman persona asset which includes it), skip to avoid duplication.
-	if hasSDDOrchestrator(existing) {
-		return InjectionResult{Files: []string{promptPath}}, nil
-	}
-
 	if adapter.SystemPromptStrategy() == model.StrategyInstructionsFile && strings.TrimSpace(existing) == "" {
 		existing = instructionsFrontmatter
 	}
@@ -549,14 +543,13 @@ func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, 
 	// Use agent-specific SDD orchestrator content when available; fall back to generic.
 	content := assets.MustRead(sddOrchestratorAsset(adapter.Agent()))
 
-	updated := existing
-	if len(updated) > 0 && !strings.HasSuffix(updated, "\n") {
-		updated += "\n"
+	// If there is a bare (un-marked) legacy orchestrator block, strip it first
+	// so InjectMarkdownSection can re-inject the current canonical content.
+	if hasLegacyBareOrchestrator(existing) {
+		existing = stripBareOrchestratorForFilePrompt(existing)
 	}
-	if len(updated) > 0 {
-		updated += "\n"
-	}
-	updated += content
+
+	updated := filemerge.InjectMarkdownSection(existing, "sdd-orchestrator", content)
 
 	writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
 	if err != nil {
@@ -564,6 +557,106 @@ func injectFileAppend(homeDir string, adapter agents.Adapter) (InjectionResult, 
 	}
 
 	return InjectionResult{Changed: writeResult.Changed, Files: []string{promptPath}}, nil
+}
+
+func hasLegacyBareOrchestrator(content string) bool {
+	markedIdx := strings.Index(content, "<!-- gentle-ai:sdd-orchestrator -->")
+	if markedIdx >= 0 {
+		prefix := content[:markedIdx]
+		if strings.Contains(prefix, "# Agent Teams Lite — Orchestrator Instructions") {
+			return true
+		}
+	}
+
+	firstHeading := -1
+	for _, marker := range sddOrchestratorMarkers {
+		idx := strings.Index(content, marker)
+		if idx >= 0 && (firstHeading == -1 || idx < firstHeading) {
+			firstHeading = idx
+		}
+	}
+	if firstHeading < 0 {
+		return false
+	}
+
+	if markedIdx < 0 {
+		return true
+	}
+
+	// Legacy bare content exists when an orchestrator heading appears before the
+	// canonical marker-based section.
+	return firstHeading < markedIdx
+}
+
+// stripBareOrchestratorForFilePrompt removes an un-marked SDD orchestrator
+// block from file-replace/append/instructions prompt files.
+//
+// Unlike CLAUDE.md markdown-section files, these prompt files often carry the
+// whole orchestrator as a contiguous block followed by other managed sections
+// (for example engram-protocol markers). The legacy block also contains many
+// "##" headings, so trimming until the next "##" is not enough.
+//
+// Strategy:
+//   - start at the first known orchestrator heading
+//   - end at the next managed marker ("<!-- gentle-ai:") if present, else EOF
+//   - preserve content before/after and normalize surrounding blank lines
+func stripBareOrchestratorForFilePrompt(content string) string {
+	if markedIdx := strings.Index(content, "<!-- gentle-ai:sdd-orchestrator -->"); markedIdx >= 0 {
+		prefix := content[:markedIdx]
+		if start := strings.Index(prefix, "# Agent Teams Lite — Orchestrator Instructions"); start >= 0 {
+			before := strings.TrimRight(content[:start], "\n")
+			after := strings.TrimLeft(content[markedIdx:], "\n")
+			if before == "" {
+				if strings.HasSuffix(after, "\n") {
+					return after
+				}
+				return after + "\n"
+			}
+			result := before + "\n\n" + after
+			if !strings.HasSuffix(result, "\n") {
+				result += "\n"
+			}
+			return result
+		}
+	}
+
+	start := -1
+	for _, marker := range sddOrchestratorMarkers {
+		idx := strings.Index(content, marker)
+		if idx >= 0 && (start == -1 || idx < start) {
+			start = idx
+		}
+	}
+	if start < 0 {
+		return content
+	}
+
+	end := len(content)
+	if rel := strings.Index(content[start:], "<!-- gentle-ai:"); rel >= 0 {
+		end = start + rel
+	}
+
+	before := strings.TrimRight(content[:start], "\n")
+	after := strings.TrimLeft(content[end:], "\n")
+
+	if before == "" && after == "" {
+		return ""
+	}
+	if before == "" {
+		if strings.HasSuffix(after, "\n") {
+			return after
+		}
+		return after + "\n"
+	}
+	if after == "" {
+		return before + "\n"
+	}
+
+	result := before + "\n\n" + after
+	if !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	return result
 }
 
 const instructionsFrontmatter = "---\n" +
