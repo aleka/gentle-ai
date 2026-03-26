@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/antigravity"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
 	codexagent "github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/cursor"
@@ -26,12 +27,13 @@ import (
 
 var update = flag.Bool("update", false, "update golden files")
 
-func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
-func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
-func cursorAdapter() agents.Adapter   { return cursor.NewAdapter() }
-func geminiAdapter() agents.Adapter   { return gemini.NewAdapter() }
-func vscodeAdapter() agents.Adapter   { return vscode.NewAdapter() }
-func codexAdapter() agents.Adapter    { return codexagent.NewAdapter() }
+func claudeAdapter() agents.Adapter      { return claude.NewAdapter() }
+func opencodeAdapter() agents.Adapter    { return opencode.NewAdapter() }
+func cursorAdapter() agents.Adapter      { return cursor.NewAdapter() }
+func geminiAdapter() agents.Adapter      { return gemini.NewAdapter() }
+func vscodeAdapter() agents.Adapter      { return vscode.NewAdapter() }
+func codexAdapter() agents.Adapter       { return codexagent.NewAdapter() }
+func antigravityAdapter() agents.Adapter { return antigravity.NewAdapter() }
 
 // ---------------------------------------------------------------------------
 // Existing golden tests (context7, presets, SDD command)
@@ -496,6 +498,78 @@ func TestGoldenCombined_Claude(t *testing.T) {
 
 	claudeMD := readTestFile(t, filepath.Join(home, ".claude", "CLAUDE.md"))
 	assertGolden(t, "combined-claude-claudemd.golden", claudeMD)
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity golden tests
+// ---------------------------------------------------------------------------
+
+func TestGoldenSDD_Antigravity(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := sdd.Inject(home, antigravityAdapter(), "")
+	if err != nil {
+		t.Fatalf("sdd.Inject(antigravity) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("sdd.Inject(antigravity) changed = false")
+	}
+
+	// Antigravity writes SDD orchestrator to ~/.gemini/GEMINI.md (StrategyAppendToFile).
+	rulesFile := readTestFile(t, filepath.Join(home, ".gemini", "GEMINI.md"))
+	assertGolden(t, "sdd-antigravity-rulesmd.golden", rulesFile)
+
+	// Golden-check a representative SDD skill file.
+	skillInit := readTestFile(t, filepath.Join(home, ".gemini", "antigravity", "skills", "sdd-init", "SKILL.md"))
+	assertGolden(t, "sdd-antigravity-skill-sdd-init.golden", skillInit)
+
+	// Verify ALL expected SDD skill files exist.
+	expectedSkills := []string{
+		"sdd-init", "sdd-apply", "sdd-archive", "sdd-explore",
+		"sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-verify",
+	}
+	skillsDir := filepath.Join(home, ".gemini", "antigravity", "skills")
+	for _, name := range expectedSkills {
+		path := filepath.Join(skillsDir, name, "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected SDD skill file %q not found: %v", name, err)
+		}
+	}
+}
+
+func TestGoldenPersona_Antigravity_Gentleman(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := persona.Inject(home, antigravityAdapter(), model.PersonaGentleman)
+	if err != nil {
+		t.Fatalf("persona.Inject(antigravity, gentleman) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("persona.Inject(antigravity, gentleman) changed = false")
+	}
+
+	rulesFile := readTestFile(t, filepath.Join(home, ".gemini", "GEMINI.md"))
+	assertGolden(t, "persona-antigravity-gentleman.golden", rulesFile)
+}
+
+func TestGoldenEngram_Antigravity(t *testing.T) {
+	home := t.TempDir()
+
+	result, err := engram.Inject(home, antigravityAdapter())
+	if err != nil {
+		t.Fatalf("engram.Inject(antigravity) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("engram.Inject(antigravity) changed = false")
+	}
+
+	// MCP config written to ~/.gemini/antigravity/mcp_config.json.
+	mcpJSON := readTestFile(t, filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"))
+	assertGolden(t, "engram-antigravity-mcp.golden", mcpJSON)
+
+	// GEMINI.md must contain the engram-protocol section.
+	rulesFile := readTestFile(t, filepath.Join(home, ".gemini", "GEMINI.md"))
+	assertGolden(t, "engram-antigravity-rulesmd.golden", rulesFile)
 }
 
 // ---------------------------------------------------------------------------
