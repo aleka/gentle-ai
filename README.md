@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="3276" height="1280" alt="image" src="https://github.com/user-attachments/assets/e81e873a-ad13-4361-84dd-77dd9e2514c3" />
+<img width="3276" height="1280" alt="image" src="https://github.com/user-attachments/assets/3a3e4ae1-b9f4-4ce9-8fd0-3833812beb99" />
 
 <h1>AI Gentle Stack</h1>
 
