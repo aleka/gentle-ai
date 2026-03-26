@@ -50,6 +50,8 @@ func SetupAgentSlug(agent model.AgentID) (string, bool) {
 		return "codex", true
 	case model.AgentAntigravity:
 		return "antigravity", true
+	case model.AgentWindsurf:
+		return "windsurf", true
 	default:
 		return "", false
 	}
