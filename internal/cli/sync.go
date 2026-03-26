@@ -20,6 +20,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/components/theme"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/pipeline"
+	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/verify"
 )
 
@@ -118,14 +119,32 @@ func BuildSyncSelection(flags SyncFlags, agentIDs []model.AgentID) model.Selecti
 	}
 }
 
-// DiscoverAgents returns the agent IDs whose GlobalConfigDir exists on disk.
-// This is the sync-safe discovery path: filesystem-only, no subprocess spawning.
+// DiscoverAgents returns the agent IDs to sync.
 //
-// The implementation delegates to agents.DiscoverInstalled with the default
-// registry, making it the canonical managed-agent discovery path shared with
-// upgrade and other flows. When --agents is provided explicitly, callers should
-// pass those IDs directly instead of calling DiscoverAgents.
+// Discovery order:
+//  1. Persisted state (~/.gentle-ai/state.json) — written at install time.
+//     When present and non-empty, only the agents the user explicitly installed
+//     are returned. This prevents sync from injecting into every IDE config dir
+//     that happens to exist on the system (issue #107).
+//  2. Filesystem fallback — delegates to agents.DiscoverInstalled with the
+//     default registry. Used when state.json is absent (users who installed
+//     before state persistence was added) or empty.
+//
+// When --agents is provided explicitly, callers should pass those IDs directly
+// instead of calling DiscoverAgents.
 func DiscoverAgents(homeDir string) []model.AgentID {
+	// Try reading persisted state first.
+	s, err := state.Read(homeDir)
+	if err == nil && len(s.InstalledAgents) > 0 {
+		ids := make([]model.AgentID, 0, len(s.InstalledAgents))
+		for _, a := range s.InstalledAgents {
+			ids = append(ids, model.AgentID(a))
+		}
+		return ids
+	}
+
+	// Fallback: filesystem discovery (backward compat for users who installed
+	// before state persistence was added).
 	reg, err := agents.NewDefaultRegistry()
 	if err != nil {
 		// Registry construction only fails if a duplicate adapter is registered,

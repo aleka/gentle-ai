@@ -253,9 +253,11 @@ func renderPhaseList(
 	b.WriteString("\n\n")
 
 	if len(state.AvailableIDs) == 0 {
-		b.WriteString(styles.WarningStyle.Render("No models found."))
+		b.WriteString(styles.WarningStyle.Render("OpenCode has not been run yet — model cache not found."))
 		b.WriteString("\n")
-		b.WriteString(styles.SubtextStyle.Render("Run 'opencode models --refresh' to update the model cache, or switch to single mode."))
+		b.WriteString(styles.SubtextStyle.Render("Run 'opencode' once, then re-run 'gentle-ai sync' to assign models."))
+		b.WriteString("\n")
+		b.WriteString(styles.SubtextStyle.Render("Using default model assignments for now."))
 		b.WriteString("\n\n")
 		b.WriteString(renderOptions([]string{"← Back to SDD mode"}, cursor))
 		b.WriteString("\n")

@@ -25,3 +25,4 @@ Thumbs.db
 # Docker
 *.tar
 cmd/gentle-ai/main
+dist/
