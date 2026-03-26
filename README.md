@@ -25,6 +25,21 @@ This is NOT an AI agent installer. Most agents are easy to install. This is an *
 
 **After**: Your agent now has memory, skills, workflow, MCP tools, and a persona that actually teaches you.
 
+### 8 Supported Agents
+
+| Agent | Delegation Model | Key Feature |
+|-------|:---:|---|
+| **Claude Code** | Full (Task tool) | Sub-agents, output styles |
+| **OpenCode** | Full (multi-mode overlay) | Per-phase model routing |
+| **Gemini CLI** | Full (experimental) | Custom agents in `~/.gemini/agents/` |
+| **Cursor** | Full (native subagents) | 9 SDD agents in `~/.cursor/agents/` |
+| **VS Code Copilot** | Full (runSubagent) | Parallel execution |
+| **Codex** | Solo-agent | CLI-native, TOML config |
+| **Windsurf** | Solo-agent | Plan Mode, Code Mode, native workflows |
+| **Antigravity** | Solo-agent + Mission Control | Built-in Browser/Terminal sub-agents |
+
+> **Note**: This project supersedes [Agent Teams Lite](https://github.com/Gentleman-Programming/agent-teams-lite) (now archived). Everything ATL provided is included here with better installation, automatic updates, and persistent memory.
+
 ---
 
 ## Quick Start
