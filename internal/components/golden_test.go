@@ -35,13 +35,7 @@ func geminiAdapter() agents.Adapter      { return gemini.NewAdapter() }
 func vscodeAdapter() agents.Adapter      { return vscode.NewAdapter() }
 func codexAdapter() agents.Adapter       { return codexagent.NewAdapter() }
 func antigravityAdapter() agents.Adapter { return antigravity.NewAdapter() }
-func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
-func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
-func cursorAdapter() agents.Adapter   { return cursor.NewAdapter() }
-func geminiAdapter() agents.Adapter   { return gemini.NewAdapter() }
-func vscodeAdapter() agents.Adapter   { return vscode.NewAdapter() }
-func codexAdapter() agents.Adapter    { return codexagent.NewAdapter() }
-func windsurfAdapter() agents.Adapter { return windsurf.NewAdapter() }
+func windsurfAdapter() agents.Adapter    { return windsurf.NewAdapter() }
 
 // ---------------------------------------------------------------------------
 // Existing golden tests (context7, presets, SDD command)
