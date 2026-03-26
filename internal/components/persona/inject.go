@@ -71,6 +71,43 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 
 	case model.StrategyFileReplace:
 		promptPath := adapter.SystemPromptFile(homeDir)
+
+		// For non-Gentleman personas (e.g. neutral), the content is just a short
+		// one-liner. Writing ONLY that content would destroy any SDD/engram
+		// sections that are injected later in the pipeline. Instead, we write the
+		// persona content as the base and let subsequent inject steps (SDD, engram)
+		// append their sections. For Gentleman, the content is the full persona
+		// asset which is safe to write as-is.
+		//
+		// If the file already exists and has managed sections (SDD, engram), we
+		// must preserve them — replace only the persona portion at the top.
+		existing, readErr := readFileOrEmpty(promptPath)
+		if readErr != nil {
+			return InjectionResult{}, readErr
+		}
+
+		if existing != "" && persona != model.PersonaGentleman {
+			// Preserve managed sections: extract everything from the first
+			// <!-- gentle-ai: marker onward, replace the text before it with
+			// the new persona content.
+			if idx := strings.Index(existing, "<!-- gentle-ai:"); idx > 0 {
+				managedSuffix := existing[idx:]
+				updated := content
+				if !strings.HasSuffix(updated, "\n") {
+					updated += "\n"
+				}
+				updated += "\n" + managedSuffix
+
+				writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
+				if err != nil {
+					return InjectionResult{}, err
+				}
+				changed = changed || writeResult.Changed
+				files = append(files, promptPath)
+				break
+			}
+		}
+
 		writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(content), 0o644)
 		if err != nil {
 			return InjectionResult{}, err
@@ -87,6 +124,32 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 		// global instructions, so the two files would conflict.
 		if cleaned, cleanErr := cleanLegacyVSCodePersona(homeDir); cleanErr == nil && cleaned {
 			changed = true
+		}
+
+		// For non-Gentleman personas, preserve managed sections (same logic
+		// as StrategyFileReplace above).
+		existing, readErr := readFileOrEmpty(promptPath)
+		if readErr != nil {
+			return InjectionResult{}, readErr
+		}
+
+		if existing != "" && persona != model.PersonaGentleman {
+			if idx := strings.Index(existing, "<!-- gentle-ai:"); idx > 0 {
+				managedSuffix := existing[idx:]
+				updated := wrapInstructionsFile(content)
+				if !strings.HasSuffix(updated, "\n") {
+					updated += "\n"
+				}
+				updated += "\n" + managedSuffix
+
+				writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
+				if err != nil {
+					return InjectionResult{}, err
+				}
+				changed = changed || writeResult.Changed
+				files = append(files, promptPath)
+				break
+			}
 		}
 
 		// Write the new instructions file (with YAML frontmatter) to the current path.

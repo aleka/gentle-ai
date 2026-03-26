@@ -260,6 +260,107 @@ func TestInjectOpenCodeGentlemanWritesAgentsFile(t *testing.T) {
 	}
 }
 
+func TestInjectOpenCodeNeutralPreservesManagedSections(t *testing.T) {
+	home := t.TempDir()
+
+	// First install gentleman persona + simulate SDD/engram sections
+	_, err := Inject(home, opencodeAdapter(), model.PersonaGentleman)
+	if err != nil {
+		t.Fatalf("Inject(gentleman) error = %v", err)
+	}
+
+	path := filepath.Join(home, ".config", "opencode", "AGENTS.md")
+
+	// Simulate SDD and engram sections appended by sdd.Inject and engram.Inject
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	withSections := string(existing) + "\n\n<!-- gentle-ai:sdd-orchestrator -->\nSDD orchestrator content here\n<!-- /gentle-ai:sdd-orchestrator -->\n\n<!-- gentle-ai:engram-protocol -->\nEngram protocol content here\n<!-- /gentle-ai:engram-protocol -->\n"
+	if err := os.WriteFile(path, []byte(withSections), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Now switch to neutral persona
+	result, err := Inject(home, opencodeAdapter(), model.PersonaNeutral)
+	if err != nil {
+		t.Fatalf("Inject(neutral) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(neutral) should report changed")
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after neutral error = %v", err)
+	}
+	text := string(content)
+
+	// Neutral content should be present
+	if !strings.Contains(text, "Be helpful, direct, and technically precise") {
+		t.Fatal("AGENTS.md missing neutral persona content")
+	}
+
+	// Managed sections MUST be preserved
+	if !strings.Contains(text, "<!-- gentle-ai:sdd-orchestrator -->") {
+		t.Fatal("AGENTS.md lost SDD orchestrator section after switching to neutral persona")
+	}
+	if !strings.Contains(text, "<!-- gentle-ai:engram-protocol -->") {
+		t.Fatal("AGENTS.md lost engram protocol section after switching to neutral persona")
+	}
+
+	// Old gentleman content should be gone
+	if strings.Contains(text, "Senior Architect") {
+		t.Fatal("AGENTS.md still has gentleman persona content after switching to neutral")
+	}
+}
+
+func TestInjectVSCodeNeutralPreservesManagedSections(t *testing.T) {
+	home := t.TempDir()
+
+	vscodeAdapter, err := agents.NewAdapter("vscode-copilot")
+	if err != nil {
+		t.Fatalf("NewAdapter(vscode-copilot) error = %v", err)
+	}
+
+	_, err = Inject(home, vscodeAdapter, model.PersonaGentleman)
+	if err != nil {
+		t.Fatalf("Inject(gentleman) error = %v", err)
+	}
+
+	path := vscodeAdapter.SystemPromptFile(home)
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	withSections := string(existing) + "\n\n<!-- gentle-ai:sdd-orchestrator -->\nSDD content\n<!-- /gentle-ai:sdd-orchestrator -->\n"
+	if err := os.WriteFile(path, []byte(withSections), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err = Inject(home, vscodeAdapter, model.PersonaNeutral)
+	if err != nil {
+		t.Fatalf("Inject(neutral) error = %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after neutral error = %v", err)
+	}
+	text := string(content)
+
+	if !strings.Contains(text, "Be helpful, direct, and technically precise") {
+		t.Fatal("instructions file missing neutral persona")
+	}
+	if !strings.Contains(text, "<!-- gentle-ai:sdd-orchestrator -->") {
+		t.Fatal("instructions file lost SDD section after switching to neutral persona")
+	}
+	if !strings.Contains(text, "---\nname:") {
+		t.Fatal("instructions file lost YAML frontmatter")
+	}
+}
+
 func TestInjectClaudeIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 
