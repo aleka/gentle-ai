@@ -455,8 +455,8 @@ test_cc_skills_minimal() {
         local skills_dir="$HOME/.claude/skills"
         assert_dir_exists "$skills_dir" "Claude skills directory"
 
-        # Minimal preset = 9 SDD skills
-        assert_file_count "$skills_dir" "SKILL.md" 9 "Minimal preset: 9 SDD skill files"
+        # Minimal preset = 10 SDD + orchestration skills (9 SDD + judgment-day)
+        assert_file_count "$skills_dir" "SKILL.md" 10 "Minimal preset: 10 skill files"
 
         # Verify specific SDD skills exist
         assert_file_exists "$skills_dir/sdd-init/SKILL.md" "sdd-init SKILL.md"
@@ -486,8 +486,8 @@ test_cc_skills_full() {
         local skills_dir="$HOME/.claude/skills"
         assert_dir_exists "$skills_dir" "Claude skills directory"
 
-        # Full preset = 11 skills (9 SDD + 2 foundation)
-        assert_file_count "$skills_dir" "SKILL.md" 11 "Full preset: 11 skill files"
+        # Full preset = 12 skills (9 SDD + judgment-day + 2 foundation)
+        assert_file_count "$skills_dir" "SKILL.md" 12 "Full preset: 12 skill files"
 
         # Verify foundation skills exist
         assert_file_exists "$skills_dir/go-testing/SKILL.md" "go-testing SKILL.md"
@@ -509,8 +509,8 @@ test_cc_skills_ecosystem() {
         local skills_dir="$HOME/.claude/skills"
         assert_dir_exists "$skills_dir" "Claude skills directory"
 
-        # ecosystem-only = 9 SDD + 2 foundation = 11
-        assert_file_count "$skills_dir" "SKILL.md" 11 "Ecosystem preset: 11 skill files"
+        # ecosystem-only = 9 SDD + judgment-day + 2 foundation = 12
+        assert_file_count "$skills_dir" "SKILL.md" 12 "Ecosystem preset: 12 skill files"
 
         # SDD skills present
         assert_file_exists "$skills_dir/sdd-init/SKILL.md" "SDD skills present"
@@ -614,9 +614,9 @@ test_oc_sdd_injection() {
         assert_file_exists "$commands_dir/sdd-init.md" "sdd-init command file"
         assert_file_contains "$commands_dir/sdd-init.md" "sdd" "sdd-init command has SDD content"
 
-        # SDD skill files (9)
+        # SDD + orchestration skill files (10)
         assert_dir_exists "$skill_dir" "OpenCode skill directory"
-        assert_file_count_min "$skill_dir" "SKILL.md" 9 "At least 9 SDD skill files"
+        assert_file_count_min "$skill_dir" "SKILL.md" 10 "At least 10 skill files"
 
         # Validate skill file content
         assert_file_exists "$skill_dir/sdd-init/SKILL.md" "sdd-init SKILL.md"
@@ -661,7 +661,7 @@ test_oc_skills_minimal() {
     if $BINARY install --agent opencode --component skills --preset minimal --persona neutral 2>&1; then
         local skill_dir="$HOME/.config/opencode/skills"
         assert_dir_exists "$skill_dir" "OpenCode skill directory"
-        assert_file_count "$skill_dir" "SKILL.md" 9 "Minimal preset: 9 SDD skill files"
+        assert_file_count "$skill_dir" "SKILL.md" 10 "Minimal preset: 10 skill files"
         assert_file_exists "$skill_dir/sdd-init/SKILL.md" "sdd-init SKILL.md"
         assert_file_size_min "$skill_dir/sdd-init/SKILL.md" 100 "sdd-init skill has real content"
     else
@@ -676,7 +676,7 @@ test_oc_skills_full() {
     if $BINARY install --agent opencode --component skills --preset full-gentleman --persona neutral 2>&1; then
         local skill_dir="$HOME/.config/opencode/skills"
         assert_dir_exists "$skill_dir" "OpenCode skill directory"
-        assert_file_count "$skill_dir" "SKILL.md" 11 "Full preset: 11 skill files"
+        assert_file_count "$skill_dir" "SKILL.md" 12 "Full preset: 12 skill files"
         assert_file_exists "$skill_dir/go-testing/SKILL.md" "go-testing skill"
         assert_file_exists "$skill_dir/skill-creator/SKILL.md" "skill-creator skill"
         assert_file_size_min "$skill_dir/go-testing/SKILL.md" 200 "go-testing skill has real content"
@@ -767,7 +767,7 @@ test_full_preset_claude_code() {
         assert_valid_json "$HOME/.claude/mcp/context7.json" "context7.json is valid JSON"
 
         # Skills
-        assert_file_count_min "$HOME/.claude/skills" "SKILL.md" 9 "At least 9 skill files"
+        assert_file_count_min "$HOME/.claude/skills" "SKILL.md" 10 "At least 10 skill files"
 
         log_pass "Full preset: all Claude Code injection-only components coexist"
     else
@@ -799,7 +799,7 @@ test_full_preset_opencode() {
         assert_file_count_min "$HOME/.config/opencode/commands" "*.md" 7 "SDD command files"
 
         # Skills
-        assert_file_count_min "$HOME/.config/opencode/skills" "SKILL.md" 9 "At least 9 skill files"
+        assert_file_count_min "$HOME/.config/opencode/skills" "SKILL.md" 10 "At least 10 skill files"
 
         log_pass "Full preset: all OpenCode injection-only components coexist"
     else
@@ -846,11 +846,11 @@ test_ecosystem_both_agents() {
         assert_file_exists "$HOME/.claude/CLAUDE.md" "Claude CLAUDE.md"
         assert_file_contains "$HOME/.claude/CLAUDE.md" "gentle-ai:sdd-orchestrator" "Claude has SDD"
         assert_file_exists "$HOME/.claude/mcp/context7.json" "Claude context7 MCP"
-        assert_file_count_min "$HOME/.claude/skills" "SKILL.md" 9 "Claude skills"
+        assert_file_count_min "$HOME/.claude/skills" "SKILL.md" 10 "Claude skills"
 
         # OpenCode
         assert_file_count_min "$HOME/.config/opencode/commands" "*.md" 7 "OpenCode SDD commands"
-        assert_file_count_min "$HOME/.config/opencode/skills" "SKILL.md" 9 "OpenCode skills"
+        assert_file_count_min "$HOME/.config/opencode/skills" "SKILL.md" 10 "OpenCode skills"
         assert_file_contains "$HOME/.config/opencode/opencode.json" '"context7"' "OpenCode context7"
         assert_valid_json "$HOME/.config/opencode/opencode.json" "OpenCode opencode.json valid JSON"
 
