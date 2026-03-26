@@ -6,6 +6,7 @@ description: >
   CRITICAL / WARNING / SUGGESTION findings. Read-only: does not modify code.
 model: inherit
 readonly: true
+# readonly blocks filesystem writes only; MCP tools (mem_save) are still permitted
 background: false
 ---
 

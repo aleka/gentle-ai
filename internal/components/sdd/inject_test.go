@@ -2638,3 +2638,74 @@ func TestMergeJSONFileReturnsMergedBytes(t *testing.T) {
 		t.Fatal("writeResult.Changed = false — first write of different content should be changed")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix 1: Cursor sub-agent files written to disk
+// ---------------------------------------------------------------------------
+
+func TestInjectCursorWritesSubAgentFiles(t *testing.T) {
+	home := t.TempDir()
+
+	cursorAdapter, err := agents.NewAdapter("cursor")
+	if err != nil {
+		t.Fatalf("NewAdapter(cursor) error = %v", err)
+	}
+
+	promptPath := cursorAdapter.SystemPromptFile(home)
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	result, injectErr := Inject(home, cursorAdapter, "")
+	if injectErr != nil {
+		t.Fatalf("Inject() error = %v", injectErr)
+	}
+
+	agentsDir := filepath.Join(home, ".cursor", "agents")
+	phases := []string{"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive"}
+
+	for _, phase := range phases {
+		agentPath := filepath.Join(agentsDir, phase+".md")
+		info, err := os.Stat(agentPath)
+		if err != nil {
+			t.Fatalf("agent file %s not found: %v", phase, err)
+		}
+		if info.Size() < 100 {
+			t.Fatalf("agent file %s too small: %d bytes", phase, info.Size())
+		}
+	}
+
+	// Verify readonly flags
+	for _, phase := range []string{"sdd-explore", "sdd-verify"} {
+		content, err := os.ReadFile(filepath.Join(agentsDir, phase+".md"))
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", phase, err)
+		}
+		if !strings.Contains(string(content), "readonly: true") {
+			t.Fatalf("agent %s should have readonly: true", phase)
+		}
+	}
+
+	// Verify result.Files includes agent paths
+	hasAgentFile := false
+	for _, f := range result.Files {
+		if strings.Contains(f, ".cursor/agents/") {
+			hasAgentFile = true
+			break
+		}
+	}
+	if !hasAgentFile {
+		t.Fatal("result.Files should include at least one cursor agent path")
+	}
+
+	// Idempotency: second run should not change files
+	result2, err := Inject(home, cursorAdapter, "")
+	if err != nil {
+		t.Fatalf("second Inject() error = %v", err)
+	}
+	for _, f := range result2.Files {
+		if strings.Contains(f, ".cursor/agents/") {
+			t.Fatalf("second inject should not report changed agent files, but got %s", f)
+		}
+	}
+}
