@@ -11,6 +11,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
+	windsurfagent "github.com/gentleman-programming/gentle-ai/internal/agents/windsurf"
 	"github.com/gentleman-programming/gentle-ai/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	// agents/cursor, agents/gemini, agents/vscode used via agents.NewAdapter()
@@ -18,6 +19,7 @@ import (
 
 func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
 func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
+func windsurfAdapter() agents.Adapter { return windsurfagent.NewAdapter() }
 
 func mockNoPackageManager(t *testing.T) {
 	t.Helper()
@@ -2017,6 +2019,170 @@ func TestInjectModelAssignmentsFunction(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Windsurf workflow injection tests
+// ---------------------------------------------------------------------------
+
+func TestInjectWindsurf_WorkflowsCopiedToWorkspace(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod marker: %v", err)
+	}
+
+	mockNoPackageManager(t)
+
+	result, err := Inject(home, windsurfAdapter(), "", InjectOptions{WorkspaceDir: workspace})
+	if err != nil {
+		t.Fatalf("Inject(windsurf) error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(windsurf) changed = false")
+	}
+
+	// Verify sdd-new.md was written to .windsurf/workflows/
+	workflowPath := filepath.Join(workspace, ".windsurf", "workflows", "sdd-new.md")
+	if _, err := os.Stat(workflowPath); err != nil {
+		t.Fatalf("workflow file %q not found: %v", workflowPath, err)
+	}
+
+	// Verify the file is in the returned Files slice.
+	found := false
+	for _, f := range result.Files {
+		if f == workflowPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("workflow path %q not in result.Files: %v", workflowPath, result.Files)
+	}
+}
+
+func TestInjectWindsurf_WorkflowsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod marker: %v", err)
+	}
+
+	mockNoPackageManager(t)
+
+	opts := InjectOptions{WorkspaceDir: workspace}
+
+	if _, err := Inject(home, windsurfAdapter(), "", opts); err != nil {
+		t.Fatalf("first Inject(windsurf) error = %v", err)
+	}
+
+	second, err := Inject(home, windsurfAdapter(), "", opts)
+	if err != nil {
+		t.Fatalf("second Inject(windsurf) error = %v", err)
+	}
+	if second.Changed {
+		t.Fatal("second Inject(windsurf) changed = true — workflow injection is not idempotent")
+	}
+}
+
+func TestInjectWindsurf_WorkflowsSkippedWithoutWorkspaceDir(t *testing.T) {
+	home := t.TempDir()
+
+	mockNoPackageManager(t)
+
+	// No WorkspaceDir → workflow step must be silently skipped.
+	result, err := Inject(home, windsurfAdapter(), "")
+	if err != nil {
+		t.Fatalf("Inject(windsurf) without workspaceDir error = %v", err)
+	}
+
+	for _, f := range result.Files {
+		if strings.Contains(f, ".windsurf") {
+			t.Fatalf("unexpected .windsurf path in result.Files when WorkspaceDir is empty: %q", f)
+		}
+	}
+}
+
+func TestInjectWindsurf_WorkflowsSkippedForNonProjectDir(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir() // empty dir — no .git, go.mod, package.json, etc.
+
+	mockNoPackageManager(t)
+
+	result, err := Inject(home, windsurfAdapter(), "", InjectOptions{WorkspaceDir: workspace})
+	if err != nil {
+		t.Fatalf("Inject(windsurf) error = %v", err)
+	}
+
+	for _, f := range result.Files {
+		if strings.Contains(f, ".windsurf") {
+			t.Fatalf("workflow file %q should not be injected into non-project dir", f)
+		}
+	}
+}
+
+func TestInjectWindsurf_WorkflowContentMatchesAsset(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod marker: %v", err)
+	}
+
+	mockNoPackageManager(t)
+
+	if _, err := Inject(home, windsurfAdapter(), "", InjectOptions{WorkspaceDir: workspace}); err != nil {
+		t.Fatalf("Inject(windsurf) error = %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(workspace, ".windsurf", "workflows", "sdd-new.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	want := assets.MustRead("windsurf/workflows/sdd-new.md")
+	if string(got) != want {
+		t.Fatalf("workflow file content mismatch:\ngot len=%d, want len=%d", len(got), len(want))
+	}
+}
+
+func TestInjectWindsurf_WorkflowsFoundFromSubdirectory(t *testing.T) {
+	home := t.TempDir()
+
+	// Simulate a real project: go.mod lives at the root.
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	// Simulate running gentle-ai from a subdirectory inside that project.
+	subDir := filepath.Join(projectRoot, "internal", "foo")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir subDir: %v", err)
+	}
+
+	mockNoPackageManager(t)
+
+	// Pass the subdirectory as WorkspaceDir — findProjectRoot must traverse
+	// upward and find go.mod at projectRoot.
+	result, err := Inject(home, windsurfAdapter(), "", InjectOptions{WorkspaceDir: subDir})
+	if err != nil {
+		t.Fatalf("Inject(windsurf) from subDir error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject(windsurf) from subDir: changed = false, expected workflow to be written")
+	}
+
+	// Workflow must be at the PROJECT ROOT, not inside the subdirectory.
+	expectedPath := filepath.Join(projectRoot, ".windsurf", "workflows", "sdd-new.md")
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Fatalf("workflow not found at project root %q: %v", expectedPath, err)
+	}
+
+	// Must NOT be written inside the subdirectory.
+	unexpectedPath := filepath.Join(subDir, ".windsurf", "workflows", "sdd-new.md")
+	if _, err := os.Stat(unexpectedPath); err == nil {
+		t.Fatalf("workflow was incorrectly written inside subdirectory %q", unexpectedPath)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Agent-specific SDD orchestrator asset selection tests
 // ---------------------------------------------------------------------------
 
@@ -2031,6 +2197,7 @@ func TestSDDOrchestratorAssetSelection(t *testing.T) {
 		{agent: model.AgentGeminiCLI, want: "gemini/sdd-orchestrator.md"},
 		{agent: model.AgentAntigravity, want: "antigravity/sdd-orchestrator.md"},
 		{agent: model.AgentCodex, want: "codex/sdd-orchestrator.md"},
+		{agent: model.AgentWindsurf, want: "windsurf/sdd-orchestrator.md"},
 		{agent: model.AgentClaudeCode, want: "generic/sdd-orchestrator.md"},
 		{agent: model.AgentOpenCode, want: "generic/sdd-orchestrator.md"},
 		{agent: model.AgentCursor, want: "generic/sdd-orchestrator.md"},
