@@ -41,7 +41,6 @@ type SkillID string
 
 const (
 	SkillSDDInit       SkillID = "sdd-init"
-	SkillSDDNew        SkillID = "sdd-new"
 	SkillSDDApply      SkillID = "sdd-apply"
 	SkillSDDVerify     SkillID = "sdd-verify"
 	SkillSDDExplore    SkillID = "sdd-explore"
