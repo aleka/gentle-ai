@@ -23,6 +23,76 @@ type InjectionResult struct {
 type InjectOptions struct {
 	OpenCodeModelAssignments map[string]model.ModelAssignment
 	ClaudeModelAssignments   map[string]model.ClaudeModelAlias
+
+	// WorkspaceDir is the root of the current workspace (e.g. os.Getwd()).
+	// When non-empty and the adapter implements workflowInjector, native
+	// workflow files are copied to <workspaceDir>/.windsurf/workflows/.
+	WorkspaceDir string
+}
+
+// workflowInjector is an optional adapter capability: if an adapter
+// implements this interface, sdd.Inject will copy the embedded workflow
+// assets into the workspace directory provided via InjectOptions.WorkspaceDir.
+// This intentionally does NOT extend agents.Adapter to avoid requiring all
+// adapters to implement no-op stubs.
+type workflowInjector interface {
+	SupportsWorkflows() bool
+	// WorkflowsDir returns the target filesystem directory where workflow files
+	// should be written (e.g. <workspaceDir>/.windsurf/workflows/).
+	WorkflowsDir(workspaceDir string) string
+	// EmbeddedWorkflowsDir returns the path inside the embedded assets FS where
+	// this adapter's workflow sources live (e.g. "windsurf/workflows").
+	// This removes the hardcoded agent name from the injection step, making
+	// the workflowInjector pattern reusable for future agents.
+	EmbeddedWorkflowsDir() string
+}
+
+// projectMarkers are filenames/dirs whose presence signals a valid project root.
+// We verify at least one exists before writing workspace-scoped files (like
+// native Windsurf workflows) to prevent accidentally polluting the user's
+// home directory when gentle-ai is invoked from ~.
+var projectMarkers = []string{
+	".git",
+	"go.mod",
+	"package.json",
+	"Cargo.toml",
+	"pyproject.toml",
+	"pom.xml",
+	"build.gradle",
+}
+
+// maxAncestorDepth is the maximum number of parent directories findProjectRoot
+// will traverse before giving up. This prevents infinite loops on deeply-nested
+// trees and ensures we stop well before reaching the filesystem root.
+const maxAncestorDepth = 10
+
+// findProjectRoot walks upward from dir, checking each level for a known
+// project marker (.git, go.mod, package.json, …). It returns the first
+// matching directory and true. If no root is found within maxAncestorDepth
+// levels, or dir is empty, it returns ("", false).
+//
+// Walking upward means users can run gentle-ai from any subdirectory of their
+// project (e.g. repo/internal/foo) and still get workflow files written to
+// the correct workspace root.
+func findProjectRoot(dir string) (string, bool) {
+	if dir == "" {
+		return "", false
+	}
+	current := filepath.Clean(dir)
+	for i := 0; i < maxAncestorDepth; i++ {
+		for _, marker := range projectMarkers {
+			if _, err := os.Stat(filepath.Join(current, marker)); err == nil {
+				return current, true
+			}
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached filesystem root ("/" on Unix, "C:\" on Windows).
+			return "", false
+		}
+		current = parent
+	}
+	return "", false
 }
 
 var (
@@ -240,6 +310,40 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, err
 				}
 
+				changed = changed || writeResult.Changed
+				files = append(files, path)
+			}
+		}
+	}
+
+	// 3b. Write native workflow files (Windsurf Hybrid-First, and any future
+	// agent that implements the workflowInjector optional interface).
+	// findProjectRoot walks upward from WorkspaceDir so gentle-ai can be
+	// invoked from any subdirectory (e.g. repo/internal/foo) and still inject
+	// workflows at the real project root. Skips silently if no root is found
+	// (e.g. running from home dir without a project).
+	if wi, ok := adapter.(workflowInjector); ok && wi.SupportsWorkflows() {
+		if projectRoot, found := findProjectRoot(opts.WorkspaceDir); found {
+			workflowsDir := wi.WorkflowsDir(projectRoot)
+			embedDir := wi.EmbeddedWorkflowsDir()
+			entries, readErr := fs.ReadDir(assets.FS, embedDir)
+			if readErr != nil {
+				return InjectionResult{}, fmt.Errorf("read embedded %s: %w", embedDir, readErr)
+			}
+
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				content, readErr := assets.Read(embedDir + "/" + entry.Name())
+				if readErr != nil {
+					return InjectionResult{}, fmt.Errorf("read embedded workflow %q: %w", entry.Name(), readErr)
+				}
+				path := filepath.Join(workflowsDir, entry.Name())
+				writeResult, err := filemerge.WriteFileAtomic(path, []byte(content), 0o644)
+				if err != nil {
+					return InjectionResult{}, fmt.Errorf("write workflow %q: %w", path, err)
+				}
 				changed = changed || writeResult.Changed
 				files = append(files, path)
 			}
@@ -504,6 +608,7 @@ var sddOrchestratorMarkers = []string{
 	"## Agent Teams Orchestrator",
 	"## Spec-Driven Development (SDD) Orchestrator",
 	"## Spec-Driven Development (SDD)",
+	"# SDD Orchestrator for Cascade",
 }
 
 func hasSDDOrchestrator(content string) bool {
@@ -525,6 +630,8 @@ func sddOrchestratorAsset(agent model.AgentID) string {
 		return "codex/sdd-orchestrator.md"
 	case model.AgentAntigravity:
 		return "antigravity/sdd-orchestrator.md"
+	case model.AgentWindsurf:
+		return "windsurf/sdd-orchestrator.md"
 	default:
 		return "generic/sdd-orchestrator.md"
 	}
