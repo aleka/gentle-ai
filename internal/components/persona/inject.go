@@ -86,26 +86,14 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 			return InjectionResult{}, readErr
 		}
 
-		if existing != "" && persona != model.PersonaGentleman {
-			// Preserve managed sections: extract everything from the first
-			// <!-- gentle-ai: marker onward, replace the text before it with
-			// the new persona content.
-			if idx := strings.Index(existing, "<!-- gentle-ai:"); idx > 0 {
-				managedSuffix := existing[idx:]
-				updated := content
-				if !strings.HasSuffix(updated, "\n") {
-					updated += "\n"
-				}
-				updated += "\n" + managedSuffix
-
-				writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
-				if err != nil {
-					return InjectionResult{}, err
-				}
-				changed = changed || writeResult.Changed
-				files = append(files, promptPath)
-				break
+		if preserved, ok := preserveManagedSections(existing, content, persona); ok {
+			writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(preserved), 0o644)
+			if err != nil {
+				return InjectionResult{}, err
 			}
+			changed = changed || writeResult.Changed
+			files = append(files, promptPath)
+			break
 		}
 
 		writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(content), 0o644)
@@ -133,23 +121,14 @@ func Inject(homeDir string, adapter agents.Adapter, persona model.PersonaID) (In
 			return InjectionResult{}, readErr
 		}
 
-		if existing != "" && persona != model.PersonaGentleman {
-			if idx := strings.Index(existing, "<!-- gentle-ai:"); idx > 0 {
-				managedSuffix := existing[idx:]
-				updated := wrapInstructionsFile(content)
-				if !strings.HasSuffix(updated, "\n") {
-					updated += "\n"
-				}
-				updated += "\n" + managedSuffix
-
-				writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(updated), 0o644)
-				if err != nil {
-					return InjectionResult{}, err
-				}
-				changed = changed || writeResult.Changed
-				files = append(files, promptPath)
-				break
+		if preserved, ok := preserveManagedSections(existing, wrapInstructionsFile(content), persona); ok {
+			writeResult, err := filemerge.WriteFileAtomic(promptPath, []byte(preserved), 0o644)
+			if err != nil {
+				return InjectionResult{}, err
 			}
+			changed = changed || writeResult.Changed
+			files = append(files, promptPath)
+			break
 		}
 
 		// Write the new instructions file (with YAML frontmatter) to the current path.
@@ -284,6 +263,35 @@ var osReadFile = func(path string) ([]byte, error) {
 	}
 
 	return content, nil
+}
+
+// preserveManagedSections checks whether the existing file content has
+// gentle-ai managed sections (SDD orchestrator, engram protocol, etc.) and
+// returns new content that preserves those sections while replacing only the
+// persona text before them. Returns ("", false) when no preservation is needed
+// (empty file, Gentleman persona, or no managed markers found).
+func preserveManagedSections(existing, newPersona string, persona model.PersonaID) (string, bool) {
+	if existing == "" || persona == model.PersonaGentleman {
+		return "", false
+	}
+
+	idx := strings.Index(existing, "<!-- gentle-ai:")
+	if idx < 0 {
+		return "", false
+	}
+
+	managedSuffix := existing[idx:]
+	updated := newPersona
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	if idx > 0 {
+		// There was persona content before the markers — add a blank line separator.
+		updated += "\n"
+	}
+	updated += managedSuffix
+
+	return updated, true
 }
 
 func readFileOrEmpty(path string) (string, error) {

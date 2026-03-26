@@ -361,6 +361,94 @@ func TestInjectVSCodeNeutralPreservesManagedSections(t *testing.T) {
 	}
 }
 
+func TestInjectNeutralPreservesWhenMarkerAtByteZero(t *testing.T) {
+	home := t.TempDir()
+
+	opencodeAdapter, err := agents.NewAdapter("opencode")
+	if err != nil {
+		t.Fatalf("NewAdapter(opencode) error = %v", err)
+	}
+
+	promptPath := opencodeAdapter.SystemPromptFile(home)
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// File starts DIRECTLY with a managed marker at byte 0 — no persona preamble.
+	markerOnly := "<!-- gentle-ai:sdd-orchestrator -->\nSDD content\n<!-- /gentle-ai:sdd-orchestrator -->\n"
+	if err := os.WriteFile(promptPath, []byte(markerOnly), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err = Inject(home, opencodeAdapter, model.PersonaNeutral)
+	if err != nil {
+		t.Fatalf("Inject(neutral) error = %v", err)
+	}
+
+	content, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(content)
+
+	if !strings.Contains(text, "Be helpful, direct, and technically precise") {
+		t.Fatal("missing neutral persona content")
+	}
+	if !strings.Contains(text, "<!-- gentle-ai:sdd-orchestrator -->") {
+		t.Fatal("SDD section destroyed when marker was at byte 0")
+	}
+}
+
+func TestInjectNeutralIdempotentWithManagedSections(t *testing.T) {
+	home := t.TempDir()
+
+	opencodeAdapter, err := agents.NewAdapter("opencode")
+	if err != nil {
+		t.Fatalf("NewAdapter(opencode) error = %v", err)
+	}
+
+	promptPath := opencodeAdapter.SystemPromptFile(home)
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Set up: neutral + managed sections
+	initial := "Be helpful, direct, and technically precise. Focus on accuracy and clarity.\n\n<!-- gentle-ai:sdd-orchestrator -->\nSDD content\n<!-- /gentle-ai:sdd-orchestrator -->\n"
+	if err := os.WriteFile(promptPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// First neutral inject
+	result1, err := Inject(home, opencodeAdapter, model.PersonaNeutral)
+	if err != nil {
+		t.Fatalf("Inject(neutral) first error = %v", err)
+	}
+
+	// Second neutral inject — should be idempotent
+	result2, err := Inject(home, opencodeAdapter, model.PersonaNeutral)
+	if err != nil {
+		t.Fatalf("Inject(neutral) second error = %v", err)
+	}
+
+	if result2.Changed && !result1.Changed {
+		t.Fatal("second neutral inject should not report changed when first didn't")
+	}
+
+	content, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(content)
+
+	// Verify no duplication
+	if strings.Count(text, "<!-- gentle-ai:sdd-orchestrator -->") != 1 {
+		t.Fatal("SDD section duplicated after idempotent neutral inject")
+	}
+	if strings.Count(text, "Be helpful") != 1 {
+		t.Fatal("neutral persona duplicated after idempotent inject")
+	}
+}
+
 func TestInjectClaudeIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 
