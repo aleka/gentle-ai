@@ -9,7 +9,7 @@ description: >
 license: Apache-2.0
 metadata:
   author: gentleman-programming
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## When to Use
@@ -26,10 +26,10 @@ metadata:
 
 Follow the **Skill Resolver Protocol** (`_shared/skill-resolver.md`) before launching ANY sub-agent:
 
-1. Obtain the skill registry (engram → `.atl/skill-registry.md` from the project root → skip if none)
+1. Obtain the skill registry: search engram (`mem_search(query: "skill-registry", project: "{project}")`) → fallback to `.atl/skill-registry.md` from the project root → skip if none
 2. Identify the target files/scope — what code will the judges review?
 3. Match relevant skills from the registry's **Compact Rules** by:
-   - **Code context**: file extensions/paths of the target (e.g., `.tsx` → react-19, typescript)
+   - **Code context**: file extensions/paths of the target (e.g., `.go` → go-testing; `.tsx` → react-19, typescript)
    - **Task context**: "review code" → framework/language skills; "create PR" → branch-pr skill
 4. Build a `## Project Standards (auto-resolved)` block with the matching compact rules
 5. Inject this block into BOTH Judge prompts AND the Fix Agent prompt (identical for all)
@@ -241,6 +241,16 @@ Manual review required before proceeding.
 
 Recommend: human review of the remaining issues above before re-running judgment day.
 ```
+
+---
+
+## Skill Resolution Feedback
+
+After every delegation that returns a result, check the `**Skill Resolution**` field in each judge/fix-agent response:
+- `injected` → skills were passed correctly ✅
+- `fallback-registry`, `fallback-path`, or `none` → skill cache was lost (likely compaction). Re-read the registry immediately and inject compact rules in all subsequent delegations.
+
+This is a self-correction mechanism. Do NOT ignore fallback reports.
 
 ---
 

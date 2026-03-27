@@ -460,6 +460,8 @@ func TestGoldenPersona_Windsurf_Gentleman(t *testing.T) {
 func TestGoldenEngram_Claude(t *testing.T) {
 	home := t.TempDir()
 
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
+
 	result, err := engram.Inject(home, claudeAdapter())
 	if err != nil {
 		t.Fatalf("engram.Inject(claude) error = %v", err)
@@ -480,6 +482,10 @@ func TestGoldenEngram_Claude(t *testing.T) {
 func TestGoldenEngram_OpenCode(t *testing.T) {
 	home := t.TempDir()
 
+	// Mock engramLookPath so the resolved command matches the golden file regardless
+	// of whether engram is installed at /opt/homebrew/bin/engram on the current machine.
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
+
 	result, err := engram.Inject(home, opencodeAdapter())
 	if err != nil {
 		t.Fatalf("engram.Inject(opencode) error = %v", err)
@@ -494,6 +500,8 @@ func TestGoldenEngram_OpenCode(t *testing.T) {
 
 func TestGoldenEngram_Windsurf(t *testing.T) {
 	home := t.TempDir()
+
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
 
 	result, err := engram.Inject(home, windsurfAdapter())
 	if err != nil {
@@ -576,6 +584,8 @@ func TestGoldenSkills_Windsurf(t *testing.T) {
 func TestGoldenCombined_Claude(t *testing.T) {
 	home := t.TempDir()
 
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
+
 	// Inject persona first, then SDD, then Engram — all write sections into CLAUDE.md.
 	if _, err := persona.Inject(home, claudeAdapter(), model.PersonaGentleman); err != nil {
 		t.Fatalf("persona.Inject error = %v", err)
@@ -594,6 +604,8 @@ func TestGoldenCombined_Claude(t *testing.T) {
 func TestGoldenCombined_Windsurf(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
+
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
 	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module test\n"), 0o644); err != nil {
 		t.Fatalf("write go.mod marker: %v", err)
 	}
@@ -673,6 +685,8 @@ func TestGoldenPersona_Antigravity_Gentleman(t *testing.T) {
 
 func TestGoldenEngram_Antigravity(t *testing.T) {
 	home := t.TempDir()
+
+	engram.SetLookPathForTest(t, "/opt/homebrew/bin/engram", "")
 
 	result, err := engram.Inject(home, antigravityAdapter())
 	if err != nil {
