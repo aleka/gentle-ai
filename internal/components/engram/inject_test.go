@@ -158,9 +158,12 @@ func TestInjectOpenCodeMergesEngramToSettings(t *testing.T) {
 	if !strings.Contains(text, `"type": "local"`) {
 		t.Fatal("opencode.json engram missing type: local")
 	}
-	// RED: OpenCode overlay must include --tools=agent (via command array)
+	// OpenCode 1.3.3+: command must be an array, no separate "args" field.
 	if !strings.Contains(text, `"--tools=agent"`) {
 		t.Fatal("opencode.json missing --tools=agent in command array")
+	}
+	if strings.Contains(text, `"args"`) {
+		t.Fatal("opencode.json must NOT have a separate args field — command must be an array")
 	}
 
 	// Verify NO plugin files or plugin arrays exist.
@@ -203,6 +206,82 @@ func TestInjectOpenCodeIsIdempotent(t *testing.T) {
 	}
 	if second.Changed {
 		t.Fatalf("Inject() second changed = true")
+	}
+}
+
+// TestInjectOpenCodeMigratesFromOldFormat verifies that when a user's
+// opencode.json contains the old v1.11.3 format (separate "args" key),
+// Inject() replaces mcp.engram atomically so that "args" is absent and
+// "command" is an array — the format required by OpenCode 1.3.3+.
+func TestInjectOpenCodeMigratesFromOldFormat(t *testing.T) {
+	home := t.TempDir()
+
+	mockEngramLookPath(t, "/opt/homebrew/bin/engram", "")
+
+	adapter := opencodeAdapter()
+	configPath := adapter.SettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+
+	// Pre-seed with the old v1.11.3 format.
+	oldFormat := `{"mcp": {"engram": {"command": "/opt/homebrew/bin/engram", "args": ["mcp","--tools=agent"], "type": "local"}}}`
+	if err := os.WriteFile(configPath, []byte(oldFormat), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode.json) error = %v", err)
+	}
+
+	result, err := Inject(home, adapter)
+	if err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("Inject() changed = false; expected migration to produce a change")
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(opencode.json) error = %v", err)
+	}
+
+	// (1) "args" key must be absent from mcp.engram.
+	if strings.Contains(string(content), `"args"`) {
+		t.Fatalf("mcp.engram still contains 'args' key after migration; got:\n%s", content)
+	}
+
+	// (2) command must be a []any containing the engram binary.
+	var parsed map[string]any
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+	mcpMap, _ := parsed["mcp"].(map[string]any)
+	engramMap, _ := mcpMap["engram"].(map[string]any)
+	cmdRaw, ok := engramMap["command"]
+	if !ok {
+		t.Fatalf("mcp.engram missing command key; got:\n%s", content)
+	}
+	cmdArr, ok := cmdRaw.([]any)
+	if !ok {
+		t.Fatalf("mcp.engram.command must be []any after migration, got %T; got:\n%s", cmdRaw, content)
+	}
+	if len(cmdArr) == 0 {
+		t.Fatalf("mcp.engram.command array is empty; got:\n%s", content)
+	}
+	firstElem, _ := cmdArr[0].(string)
+	if firstElem == "" {
+		t.Fatalf("mcp.engram.command[0] is empty or not a string; got:\n%s", content)
+	}
+	// Must end with "engram".
+	if filepath.Base(firstElem) != "engram" {
+		t.Fatalf("mcp.engram.command[0] = %q does not end with 'engram'; got:\n%s", firstElem, content)
+	}
+
+	// (3) Second Inject() call must be idempotent (changed=false).
+	second, err := Inject(home, adapter)
+	if err != nil {
+		t.Fatalf("Inject() second error = %v", err)
+	}
+	if second.Changed {
+		t.Fatalf("Inject() second changed = true; expected idempotent (no change)")
 	}
 }
 
@@ -603,17 +682,17 @@ func TestInjectCodexIsIdempotent(t *testing.T) {
 
 // ─── Absolute path resolution tests ──────────────────────────────────────────
 
-// mockEngramLookPath sets engramLookPath to a mock and restores it after the test.
+// mockEngramLookPath sets EngramLookPath to a mock and restores it after the test.
 func mockEngramLookPath(t *testing.T, result string, errMsg string) {
 	t.Helper()
-	orig := engramLookPath
-	engramLookPath = func(string) (string, error) {
+	orig := EngramLookPath
+	EngramLookPath = func(string) (string, error) {
 		if errMsg != "" {
 			return "", fmt.Errorf("%s", errMsg)
 		}
 		return result, nil
 	}
-	t.Cleanup(func() { engramLookPath = orig })
+	t.Cleanup(func() { EngramLookPath = orig })
 }
 
 // TestEngramInjectUsesAbsolutePathWhenAvailable verifies that when engram is
@@ -712,11 +791,8 @@ func TestEngramInjectFallsBackToRelativeWhenNotFound(t *testing.T) {
 func TestEngramInjectAbsolutePathForOpenCodeMergeStrategy(t *testing.T) {
 	home := t.TempDir()
 
-	restoreLookPath := engramLookPath
-	engramLookPath = func(name string) (string, error) {
-		return "/usr/local/bin/engram", nil
-	}
-	t.Cleanup(func() { engramLookPath = restoreLookPath })
+	absPath := "/usr/local/bin/engram"
+	mockEngramLookPath(t, absPath, "")
 
 	adapter := opencodeAdapter()
 	settingsDir := filepath.Dir(adapter.SettingsPath(home))
@@ -733,8 +809,50 @@ func TestEngramInjectAbsolutePathForOpenCodeMergeStrategy(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 
-	if !strings.Contains(string(content), "/usr/local/bin/engram") {
-		t.Fatalf("OpenCode settings missing absolute engram path, got: %s", string(content))
+	text := string(content)
+	if !strings.Contains(text, absPath) {
+		t.Fatalf("OpenCode settings missing absolute engram path, got: %s", text)
+	}
+	// OpenCode 1.3.3+: command must be an array, no separate "args" field.
+	if strings.Contains(text, `"args"`) {
+		t.Fatalf("OpenCode settings must NOT have a separate args field; got: %s", text)
+	}
+
+	// Structurally verify command is a []any containing the absolute path.
+	var parsed map[string]any
+	if err := json.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("Unmarshal(opencode.json) error = %v", err)
+	}
+	mcpRaw, ok := parsed["mcp"]
+	if !ok {
+		t.Fatalf("opencode.json missing mcp key; got:\n%s", text)
+	}
+	mcpMap, ok := mcpRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("mcp key has unexpected type %T; got:\n%s", mcpRaw, text)
+	}
+	engramRaw, ok := mcpMap["engram"]
+	if !ok {
+		t.Fatalf("mcp missing engram key; got:\n%s", text)
+	}
+	engramMap, ok := engramRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("mcp.engram has unexpected type %T; got:\n%s", engramRaw, text)
+	}
+	cmdRaw, ok := engramMap["command"]
+	if !ok {
+		t.Fatalf("mcp.engram missing command key; got:\n%s", text)
+	}
+	cmdArr, ok := cmdRaw.([]any)
+	if !ok {
+		t.Fatalf("mcp.engram.command must be an array, got %T; value:\n%s", cmdRaw, text)
+	}
+	if len(cmdArr) == 0 {
+		t.Fatalf("mcp.engram.command array is empty; got:\n%s", text)
+	}
+	firstElem, ok := cmdArr[0].(string)
+	if !ok || firstElem != absPath {
+		t.Fatalf("mcp.engram.command[0] = %v, want %q; got:\n%s", cmdArr[0], absPath, text)
 	}
 }
 

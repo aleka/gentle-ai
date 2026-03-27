@@ -20,9 +20,30 @@ type InjectionResult struct {
 	Files   []string
 }
 
-// engramLookPath is the function used to resolve the engram binary path.
-// It is a package-level variable so it can be replaced in tests.
-var engramLookPath = exec.LookPath
+// EngramLookPath is the function used to resolve the engram binary path.
+// It is a package-level variable so it can be replaced in tests — both from
+// within the engram package and from external test packages (e.g. golden_test.go).
+// In production it is set to exec.LookPath.
+var EngramLookPath = exec.LookPath
+
+// SetLookPathForTest replaces EngramLookPath with a mock for the duration of
+// a test and restores the original after the test completes. Exported so that
+// external test packages (e.g. golden_test.go in components) can control the
+// resolved engram path.
+func SetLookPathForTest(t interface {
+	Helper()
+	Cleanup(func())
+}, result, errMsg string) {
+	t.Helper()
+	orig := EngramLookPath
+	EngramLookPath = func(string) (string, error) {
+		if errMsg != "" {
+			return "", fmt.Errorf("%s", errMsg)
+		}
+		return result, nil
+	}
+	t.Cleanup(func() { EngramLookPath = orig })
+}
 
 // resolveEngramCommand attempts to resolve the engram binary to an absolute
 // path using exec.LookPath. If found, it returns the absolute path and true.
@@ -31,7 +52,7 @@ var engramLookPath = exec.LookPath
 // an absolute path survives across environments where PATH is not fully
 // inherited (e.g. Windsurf, IDEs that launch without a login shell).
 func resolveEngramCommand() (string, bool) {
-	p, err := engramLookPath("engram")
+	p, err := EngramLookPath("engram")
 	if err != nil || p == "" {
 		return "engram", false
 	}
@@ -56,12 +77,22 @@ func engramOverlayJSON(agentID model.AgentID) []byte {
 	cmd, _ := resolveEngramCommand()
 	var cfg map[string]any
 	if agentID == model.AgentOpenCode {
+		// OpenCode 1.3.3+ requires command as an array for type:local servers.
+		// The separate "args" field is not accepted; all args must be in the
+		// command array itself.
+		//
+		// Use the __replace__ sentinel so that MergeJSONObjects replaces the
+		// entire mcp.engram object atomically instead of deep-merging into it.
+		// Without this, users upgrading from v1.11.3 (which had a separate
+		// "args" key) would end up with both "args" and the new array "command"
+		// in their config, which is invalid for OpenCode 1.3.3.
 		cfg = map[string]any{
 			"mcp": map[string]any{
 				"engram": map[string]any{
-					"command": cmd,
-					"args":    []string{"mcp", "--tools=agent"},
-					"type":    "local",
+					"__replace__": map[string]any{
+						"command": []string{cmd, "mcp", "--tools=agent"},
+						"type":    "local",
+					},
 				},
 			},
 		}
