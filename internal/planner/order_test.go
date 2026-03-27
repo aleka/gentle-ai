@@ -12,7 +12,7 @@ func TestTopologicalSortOrdersDependenciesFirst(t *testing.T) {
 	deps := map[model.ComponentID][]model.ComponentID{
 		model.ComponentSkills:   {model.ComponentSDD},
 		model.ComponentSDD:      {model.ComponentEngram},
-		model.ComponentEngram:   nil,
+		model.ComponentEngram:   {model.ComponentPersona},
 		model.ComponentPersona:  nil,
 		model.ComponentContext7: nil,
 	}
@@ -24,8 +24,8 @@ func TestTopologicalSortOrdersDependenciesFirst(t *testing.T) {
 
 	if !reflect.DeepEqual(ordered, []model.ComponentID{
 		model.ComponentContext7,
-		model.ComponentEngram,
 		model.ComponentPersona,
+		model.ComponentEngram,
 		model.ComponentSDD,
 		model.ComponentSkills,
 	}) {
