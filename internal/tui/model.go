@@ -1333,15 +1333,12 @@ func preselectedAgents(homeDir string, detection system.DetectionResult) []model
 	// When present and non-empty, only the agents the user explicitly
 	// installed are returned. This prevents install from injecting into
 	// every IDE config dir that happens to exist on the system (issue #114).
-	if homeDir != "" {
-		s, readErr := state.Read(homeDir)
-		if readErr == nil && len(s.InstalledAgents) > 0 {
-			ids := make([]model.AgentID, 0, len(s.InstalledAgents))
-			for _, a := range s.InstalledAgents {
-				ids = append(ids, model.AgentID(a))
-			}
-			return ids
+	if names := state.InstalledAgentsFromState(homeDir); len(names) > 0 {
+		ids := make([]model.AgentID, 0, len(names))
+		for _, a := range names {
+			ids = append(ids, model.AgentID(a))
 		}
+		return ids
 	}
 
 	// Priority 2: Fallback to filesystem detection (backward compat
