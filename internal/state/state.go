@@ -33,6 +33,21 @@ func Read(homeDir string) (InstallState, error) {
 	return s, nil
 }
 
+// InstalledAgentsFromState returns the persisted agent names from state.json.
+// When the file exists and contains at least one installed agent, the names
+// are returned. Returns nil when the file is absent, unreadable, or empty —
+// callers should fall back to filesystem detection in that case.
+func InstalledAgentsFromState(homeDir string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	s, err := Read(homeDir)
+	if err != nil || len(s.InstalledAgents) == 0 {
+		return nil
+	}
+	return s.InstalledAgents
+}
+
 // Write persists the given agent IDs to the state file under the given home directory.
 // It creates the .gentle-ai directory if it does not already exist.
 func Write(homeDir string, agents []string) error {
