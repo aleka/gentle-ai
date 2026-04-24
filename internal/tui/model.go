@@ -3041,8 +3041,10 @@ func preselectedAgents(homeDir string, detection system.DetectionResult) []model
 			selected = append(selected, model.AgentCodex)
 		case string(model.AgentAntigravity):
 			selected = append(selected, model.AgentAntigravity)
-		case string(model.AgentWindsurf):
+			case string(model.AgentWindsurf):
 			selected = append(selected, model.AgentWindsurf)
+		case "kimi":
+			selected = append(selected, model.AgentID("kimi"))
 		case string(model.AgentQwenCode):
 			selected = append(selected, model.AgentQwenCode)
 		}
