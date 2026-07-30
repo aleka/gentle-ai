@@ -1710,6 +1710,26 @@ func hasManagedPiCodeGraphManifest(homeDir string) bool {
 	return json.Unmarshal(data, &manifest) == nil && filepath.IsAbs(manifest.MCPPath) && manifest.MCP != nil && manifest.MCP.AfterHash != ""
 }
 
+// renderCodeGraphUpgradeOutcome appends the CodeGraph auto-upgrade outcome to
+// the sync report: performed/pending lines with from→to versions, rollback
+// notes, and warnings. A nil or zero outcome renders nothing.
+func renderCodeGraphUpgradeOutcome(b *strings.Builder, outcome *CodeGraphUpgradeOutcome) {
+	if outcome == nil {
+		return
+	}
+	switch {
+	case outcome.Performed:
+		fmt.Fprintf(b, "CodeGraph upgraded: %s → %s\n", outcome.From, outcome.To)
+	case outcome.Pending:
+		fmt.Fprintf(b, "CodeGraph upgrade pending: %s → %s (run `gentle-ai sync` without --dry-run to apply)\n", outcome.From, outcome.To)
+	case outcome.RolledBack:
+		fmt.Fprintf(b, "CodeGraph upgrade rolled back: kept %s (attempted %s)\n", outcome.From, outcome.To)
+	}
+	if outcome.Warning != "" {
+		fmt.Fprintf(b, "CodeGraph upgrade warning: %s\n", outcome.Warning)
+	}
+}
+
 // RenderSyncReport renders a human-readable summary of a sync execution.
 //
 // Unlike verify.RenderReport (which shows verification check statuses), this
@@ -1730,6 +1750,9 @@ func RenderSyncReport(result SyncResult) string {
 			fmt.Fprintf(&b, "Agents: %s\n", joinAgentIDs(result.Agents))
 			fmt.Fprintln(&b, "All managed assets are already up to date. No files changed.")
 		}
+		// A registry-failure warning must surface even when nothing else
+		// changed; silence here would hide that the upgrade check is broken.
+		renderCodeGraphUpgradeOutcome(&b, result.CodeGraphUpgrade)
 		return strings.TrimRight(b.String(), "\n")
 	}
 
@@ -1746,6 +1769,7 @@ func RenderSyncReport(result SyncResult) string {
 		}
 		fmt.Fprintf(&b, "Prepare steps: %d\n", len(result.Plan.Prepare))
 		fmt.Fprintf(&b, "Apply steps: %d\n", len(result.Plan.Apply))
+		renderCodeGraphUpgradeOutcome(&b, result.CodeGraphUpgrade)
 		return strings.TrimRight(b.String(), "\n")
 	}
 
@@ -1764,6 +1788,7 @@ func RenderSyncReport(result SyncResult) string {
 	// FilesChanged is 0 only when all assets were already current (no-op path
 	// above handles that case). A non-zero value here reflects real writes.
 	fmt.Fprintf(&b, "Sync actions executed: %d files changed\n", result.FilesChanged)
+	renderCodeGraphUpgradeOutcome(&b, result.CodeGraphUpgrade)
 
 	if len(result.ChangedFiles) > 0 {
 		for _, path := range result.ChangedFiles {

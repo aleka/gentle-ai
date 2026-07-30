@@ -4801,6 +4801,47 @@ func TestSyncCodeGraphUpgrade_DryRunReportsPending(t *testing.T) {
 	}
 }
 
+// TestSyncCodeGraphUpgrade_PerformedUpgradeKeepsNoOpFalse verifies NoOp
+// honesty (design Decision 5): an npm-global reinstall can leave every managed
+// file byte-identical, so FilesChanged==0 alone must not produce a NoOp report
+// when an upgrade was performed.
+func TestSyncCodeGraphUpgrade_PerformedUpgradeKeepsNoOpFalse(t *testing.T) {
+	// claude-code (not opencode): the OpenCode CodeGraph reconcile rewires
+	// opencode.json on every sync (pre-existing behavior), which would keep
+	// FilesChanged non-zero and defeat what this test isolates — the
+	// NoOp=false guard when the upgrade leaves every managed file identical.
+	upgradeCalls := setupCodeGraphSyncHome(t, "claude-code")
+	stubCodeGraphVersionCheck(t, update.UpdateResult{
+		Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpdateAvailable,
+		InstalledVersion: "1.4.1", LatestVersion: "1.5.0",
+	})
+
+	first, err := RunSync([]string{"--agents", "claude-code"})
+	if err != nil {
+		t.Fatalf("RunSync() first error = %v", err)
+	}
+	if first.CodeGraphUpgrade == nil || !first.CodeGraphUpgrade.Performed {
+		t.Fatalf("first sync outcome = %+v, want Performed=true", first.CodeGraphUpgrade)
+	}
+
+	second, err := RunSync([]string{"--agents", "claude-code"})
+	if err != nil {
+		t.Fatalf("RunSync() second error = %v", err)
+	}
+	if *upgradeCalls != 2 {
+		t.Fatalf("upgrade calls = %d, want 2 (one per sync while the registry reports an update)", *upgradeCalls)
+	}
+	if second.FilesChanged != 0 {
+		t.Fatalf("second sync FilesChanged = %d, want 0 (idempotent file state; upgrade is npm-global)", second.FilesChanged)
+	}
+	if second.CodeGraphUpgrade == nil || !second.CodeGraphUpgrade.Performed {
+		t.Fatalf("second sync outcome = %+v, want Performed=true", second.CodeGraphUpgrade)
+	}
+	if second.NoOp {
+		t.Fatalf("NoOp = true after a performed CodeGraph upgrade; performed upgrades must force NoOp=false")
+	}
+}
+
 // TestSyncCodeGraphUpgrade_RegistryDownWarnsAndContinues verifies the
 // Resilient Sync spec (SHALL): when the npm registry is unreachable/errors,
 // sync warns, preserves the existing installation, and succeeds. It exercises
@@ -4831,5 +4872,82 @@ func TestSyncCodeGraphUpgrade_RegistryDownWarnsAndContinues(t *testing.T) {
 	}
 	if *upgradeCalls != 0 {
 		t.Fatalf("upgrade executed %d times despite registry failure; existing installation must be preserved", *upgradeCalls)
+	}
+}
+
+// TestRenderSyncReport_ShowsCodeGraphUpgradeOutcome verifies the sync report
+// surfaces the CodeGraph upgrade outcome: performed/pending/rolled-back lines
+// carry from/to versions, warnings are shown even on an otherwise no-op
+// report, and absent/zero outcomes render nothing.
+func TestRenderSyncReport_ShowsCodeGraphUpgradeOutcome(t *testing.T) {
+	agents := []model.AgentID{model.AgentClaudeCode}
+	tests := []struct {
+		name    string
+		result  SyncResult
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "performed upgrade shows from/to versions",
+			result: SyncResult{
+				Agents:           agents,
+				FilesChanged:     1,
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{Performed: true, From: "1.4.1", To: "1.5.0"},
+			},
+			want: []string{"CodeGraph", "upgrad", "1.4.1", "1.5.0"},
+		},
+		{
+			name: "pending upgrade shows from/to versions in dry-run",
+			result: SyncResult{
+				Agents:           agents,
+				DryRun:           true,
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{Pending: true, From: "1.4.1", To: "1.5.0"},
+			},
+			want: []string{"CodeGraph", "pending", "1.4.1", "1.5.0"},
+		},
+		{
+			name: "warning renders even when sync is otherwise a no-op",
+			result: SyncResult{
+				Agents:           agents,
+				NoOp:             true,
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{Warning: "CodeGraph upgrade check failed: npm registry returned HTTP 500"},
+			},
+			want: []string{"CodeGraph", "warning", "HTTP 500"},
+		},
+		{
+			name: "rolled back upgrade shows warning and versions",
+			result: SyncResult{
+				Agents:           agents,
+				FilesChanged:     1,
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{RolledBack: true, From: "1.4.1", To: "1.5.0", Warning: "codegraph upgrade failed: boom; rolled back to captured CodeGraph 1.4.1"},
+			},
+			want: []string{"CodeGraph", "rolled back", "1.4.1"},
+		},
+		{
+			name:    "nil outcome renders no CodeGraph lines",
+			result:  SyncResult{Agents: agents, NoOp: true},
+			notWant: []string{"CodeGraph"},
+		},
+		{
+			name:    "zero outcome renders no CodeGraph lines",
+			result:  SyncResult{Agents: agents, FilesChanged: 1, CodeGraphUpgrade: &CodeGraphUpgradeOutcome{}},
+			notWant: []string{"CodeGraph"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := RenderSyncReport(tt.result)
+			for _, want := range tt.want {
+				if !strings.Contains(report, want) {
+					t.Errorf("report missing %q:\n%s", want, report)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(report, notWant) {
+					t.Errorf("report should not contain %q:\n%s", notWant, report)
+				}
+			}
+		})
 	}
 }
