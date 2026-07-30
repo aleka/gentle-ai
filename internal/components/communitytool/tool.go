@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -84,7 +85,23 @@ func (fn RunnerFunc) Run(name string, args ...string) error { return fn(name, ar
 var (
 	codeGraphPackageLookPath = exec.LookPath
 	codeGraphPnpmGlobalBin   = defaultPnpmGlobalBin
+	// codeGraphInstalledVersion captures the installed CodeGraph CLI version
+	// before an upgrade so rollback can pin the reinstall. Package-level var
+	// so tests can swap it.
+	codeGraphInstalledVersion = detectCodeGraphCLIVersion
 )
+
+// codeGraphVersionRegexp extracts a semver-like version from `codegraph
+// --version` output. Same pattern as internal/update for consistency.
+var codeGraphVersionRegexp = regexp.MustCompile(`\d+\.\d+(?:\.\d+)?`)
+
+func detectCodeGraphCLIVersion() string {
+	out, err := exec.Command("codegraph", "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return codeGraphVersionRegexp.FindString(string(out))
+}
 
 var definitions = []Definition{
 	{
@@ -112,11 +129,24 @@ func DefinitionFor(id model.CommunityToolID) (Definition, bool) {
 	return Definition{}, false
 }
 
+// InstallOpts tunes community tool installation. The zero value preserves the
+// historical reconcile-only behavior for already-satisfied installs.
+type InstallOpts struct {
+	// ForceReinstall bypasses the satisfied/repair early-return and runs the
+	// full install sequence (global package reinstall + target rewiring) even
+	// when the install already looks healthy.
+	ForceReinstall bool
+}
+
 func Install(id model.CommunityToolID, workspaceDir string, runner Runner) (Result, error) {
 	return InstallWithHome(id, workspaceDir, defaultHomeDir(), runner, DetectorFunc(exec.LookPath))
 }
 
 func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir string, runner Runner, detector Detector) (Result, error) {
+	return InstallWithHomeOpts(id, workspaceDir, homeDir, runner, detector, InstallOpts{})
+}
+
+func InstallWithHomeOpts(id model.CommunityToolID, workspaceDir string, homeDir string, runner Runner, detector Detector, opts InstallOpts) (Result, error) {
 	if runner == nil {
 		return Result{}, fmt.Errorf("community tool runner is not configured")
 	}
@@ -141,7 +171,7 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 		}
 		return result, cause
 	}
-	if before.CodeGraphReconcileSatisfied() || codeGraphCanRepairWithoutFullInstall(homeDir, before) {
+	if !opts.ForceReinstall && (before.CodeGraphReconcileSatisfied() || codeGraphCanRepairWithoutFullInstall(homeDir, before)) {
 		if NeedsOpenCodeCodeGraphReconcile(homeDir) {
 			result.CommandsRun = append(result.CommandsRun, "codegraph install --target opencode --location global --yes")
 		}
@@ -176,10 +206,12 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 
 	targets := detectedCodeGraphTargets(homeDir)
 	commands := make([][]string, 0, 2)
-	if len(targets) > 0 {
+	if len(targets) > 0 && !opts.ForceReinstall {
 		commands = append(commands, []string{"codegraph", "install", "--target", strings.Join(targets, ","), "--location", "global", "--yes"})
 	}
-	if before.CLI != AvailabilityAvailable {
+	if before.CLI != AvailabilityAvailable || opts.ForceReinstall {
+		// A forced reinstall always rebuilds the global package install before
+		// rewiring targets, even when the CLI binary is already present.
 		var err error
 		commands, err = CodeGraphCommandsForDetectorAndTargets(DetectorFunc(codeGraphPackageLookPath), targets)
 		if err != nil {
@@ -219,6 +251,65 @@ func InstallWithHome(id model.CommunityToolID, workspaceDir string, homeDir stri
 	}
 	result.ManualActions = append(result.ManualActions, "CodeGraph CLI was installed and supported agents were connected. Project indexes will be created automatically when an enabled agent opens inside a project.")
 	return result, nil
+}
+
+// UpgradeCodeGraphWithHome upgrades an existing CodeGraph install to the
+// latest published CLI: it captures the installed version and detected native
+// targets, snapshots CodeGraph-managed files, then runs a forced full install
+// of @latest. On failure it restores the snapshot and reinstalls the captured
+// version so a broken upgrade never strands the user's wiring.
+func UpgradeCodeGraphWithHome(homeDir, workspaceDir string, runner Runner, detector Detector) (Result, error) {
+	if runner == nil {
+		return Result{}, fmt.Errorf("community tool runner is not configured")
+	}
+	captured := codeGraphInstalledVersion()
+	targets := detectedCodeGraphTargets(homeDir)
+	snapshots, err := snapshotCodeGraphPaths(CodeGraphManagedPaths(homeDir))
+	if err != nil {
+		return Result{}, err
+	}
+	result, upgradeErr := InstallWithHomeOpts(model.CommunityToolCodeGraph, workspaceDir, homeDir, runner, detector, InstallOpts{ForceReinstall: true})
+	if upgradeErr == nil {
+		return result, nil
+	}
+	if rollbackErr := rollbackCodeGraphUpgrade(&result, snapshots, captured, targets, runner); rollbackErr != nil {
+		return result, fmt.Errorf("codegraph upgrade failed: %w; rollback failed: %v — CodeGraph may be left in a broken state; sync continues, but reinstall manually with `npm install -g @colbymchenry/codegraph@%s`", upgradeErr, rollbackErr, rollbackPin(captured))
+	}
+	return result, fmt.Errorf("codegraph upgrade failed: %w; rolled back to captured CodeGraph %s — sync continues", upgradeErr, captured)
+}
+
+// rollbackPin resolves the version pin used to reinstall CodeGraph after a
+// failed upgrade. When the installed version could not be captured, the best
+// available recovery is reinstalling @latest.
+func rollbackPin(captured string) string {
+	if pin := strings.TrimSpace(captured); pin != "" {
+		return pin
+	}
+	return "latest"
+}
+
+// rollbackCodeGraphUpgrade undoes a failed upgrade: it restores the
+// pre-upgrade managed files, reinstalls the captured CLI version globally, and
+// rewires the captured native targets. The reinstall commands are recorded on
+// the result for reporting.
+func rollbackCodeGraphUpgrade(result *Result, snapshots []codeGraphSnapshot, captured string, targets []string, runner Runner) error {
+	if err := restoreCodeGraphPaths(snapshots); err != nil {
+		return fmt.Errorf("restore CodeGraph-managed files: %w", err)
+	}
+	pin := rollbackPin(captured)
+	reinstall := []string{"npm", "install", "-g", "@colbymchenry/codegraph@" + pin}
+	result.CommandsRun = append(result.CommandsRun, strings.Join(reinstall, " "))
+	if err := runner.Run(reinstall[0], reinstall[1:]...); err != nil {
+		return fmt.Errorf("reinstall captured CodeGraph version: %w", err)
+	}
+	if len(targets) > 0 {
+		rewire := []string{"codegraph", "install", "--target", strings.Join(targets, ","), "--location", "global", "--yes"}
+		result.CommandsRun = append(result.CommandsRun, strings.Join(rewire, " "))
+		if err := runner.Run(rewire[0], rewire[1:]...); err != nil {
+			return fmt.Errorf("rewire captured CodeGraph targets: %w", err)
+		}
+	}
+	return nil
 }
 
 func codeGraphCanRepairWithoutFullInstall(homeDir string, status Status) bool {

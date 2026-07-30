@@ -12,6 +12,10 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 )
 
+// codeGraphUpstreamVersion is an informational contract marker recording the
+// CodeGraph upstream version this compatibility table was written against. It
+// is not a pin: installs and upgrades always target @latest from the npm
+// registry, and the installed version is captured at runtime for rollback.
 const codeGraphUpstreamVersion = "1.4.1"
 
 type codeGraphStrategy string
