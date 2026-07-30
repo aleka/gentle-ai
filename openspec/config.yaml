@@ -3,12 +3,15 @@ schema: spec-driven
 
 context: |
   Tech stack: Go 1.25.10, Bubbletea TUI (charmbracelet/bubbletea v1.3.10), lipgloss v1.1.0
-  Architecture: cmd/ entrypoints, internal/ packages (agents, tui, model, pipeline, catalog, system, planner, verify, update, opencode, installcmd, cli, app, components, state, backup, assets, agentbuilder)
-  Feature branch: feat/claude-contextual-skill-loading — contextual skill loading from Claude Code
-  Agents: multi-agent support (claude, opencode, cursor, codex, gemini, vscode, windsurf, antigravity)
+  Module: github.com/gentleman-programming/gentle-ai/v2
+  Architecture: cmd/gentle-ai entrypoint, internal/ packages (agents, app, catalog, cli, components, doctor, installcmd, model, opencode, pathidentity, pipeline, planner, recoverytrace, releasepolicy, reviewtransaction, sddstatus, skillregistry, state, storage, system, tui, update, backup, assets, agentbuilder)
+  Feature branch: feat/984-codegraph-version-aware — CodeGraph version-aware CLI support
+  Agents: multi-agent support (claude, codex, cursor, gemini, hermes, kilocode, kimi, kiro, opencode, openclaw, pi, qwen, trae, vscode, windsurf, antigravity)
   Skills catalog: internal/catalog/skills.go — known skill registry; project skills in skills/
-  Build: goreleaser (.goreleaser.yaml), CI: GitHub Actions (ci.yml, pr-check.yml, release.yml)
-  Style: gofmt (standard), go vet, no golangci-lint config found
+  Build: goreleaser v2 (.goreleaser.yaml), CGO_ENABLED=0, linux/darwin amd64/arm64
+  CI: GitHub Actions (ci.yml, pr-check.yml, release.yml, windows-full-suite.yml, discord-notifications.yml)
+  Style: gofmt via custom go run ./internal/gofmtcheck, go vet, no golangci-lint config
+  Workflow: issue-first, conventional commits, branch naming ^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$, PR review budget 400 changed lines, work-unit commits
 
 strict_tdd: true
 
@@ -27,21 +30,25 @@ rules:
     - Use hierarchical numbering (1.1, 1.2, etc.)
     - Keep tasks small enough to complete in one session
   apply:
-    - Load gentleman-bubbletea skill for TUI work (internal/tui/)
-    - Load gentleman-installer skill for installation steps
-    - Load gentleman-system skill for OS/system detection
     - Load go-testing skill when writing tests
+    - Load branch-pr skill when preparing PRs
+    - Load chained-pr skill when forecast exceeds 400 changed lines
     - Follow existing code patterns in internal/ packages
   verify:
     - Run: go test ./...
     - Run: go vet ./...
+    - Run: go run ./internal/gofmtcheck
     - Compare implementation against every spec scenario
   archive:
     - Warn before merging destructive deltas (large removals)
 
+delivery:
+  strategy: auto-chain
+  review_budget_lines: 400
+
 testing:
   strict_tdd: true
-  detected: "2026-05-05"
+  detected: "2026-07-29"
 
   runner:
     command: "go test ./..."
@@ -51,18 +58,22 @@ testing:
     unit:
       available: true
       tool: "go test"
-      note: "132 test files across internal/ packages"
+      note: "457 test files across internal/ packages; ~4,410 test functions"
     integration:
       available: true
       tool: "net/http/httptest (built-in)"
     e2e:
       available: true
       tool: "Docker-based E2E (e2e/docker-test.sh)"
-      note: "Dockerfile.ubuntu, Dockerfile.fedora, Dockerfile.arch — triggered by RUN_FULL_E2E=1"
+      note: "Dockerfile.ubuntu, Dockerfile.fedora, Dockerfile.arch — triggered by RUN_FULL_E2E=1 / RUN_BACKUP_TESTS=1"
+    organic_runtime:
+      available: true
+      tool: "go test ./e2e/organicruntime"
+      note: "Real-agent journeys gated by GENTLE_AI_REAL_AGENT_E2E=1"
     tui:
       available: true
-      tool: "bubbletea tea.KeyMsg simulation (no teatest — direct model.Update() testing)"
-      note: "TUI tests use direct Bubbletea model updates, not teatest library"
+      tool: "bubbletea tea.KeyMsg simulation (direct model.Update() testing)"
+      note: "TUI tests use direct Bubbletea model updates, not the teatest library"
 
   coverage:
     available: true
@@ -71,10 +82,10 @@ testing:
   quality:
     linter:
       available: false
-      note: "No golangci-lint config found; go vet is available"
+      note: "No golangci-lint config found; custom gofmt check and go vet are used"
     type_checker:
       available: true
       command: "go vet ./..."
     formatter:
       available: true
-      command: "gofmt"
+      command: "go run ./internal/gofmtcheck"
