@@ -13,6 +13,16 @@ import (
 // point it at an httptest server.
 var npmRegistryBaseURL = "https://registry.npmjs.org"
 
+// SetNpmRegistryBaseURL redirects npm registry lookups (e.g., to an httptest
+// server) and returns a function that restores the previous URL. It exists so
+// tests in OTHER packages (e.g. internal/cli sync tests) can exercise the real
+// npm fetch path; in-package tests set npmRegistryBaseURL directly.
+func SetNpmRegistryBaseURL(url string) (restore func()) {
+	previous := npmRegistryBaseURL
+	npmRegistryBaseURL = url
+	return func() { npmRegistryBaseURL = previous }
+}
+
 // npmLatestResponse is the subset of the npm registry /<pkg>/latest response
 // that the update check needs.
 type npmLatestResponse struct {

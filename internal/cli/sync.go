@@ -31,6 +31,8 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/state"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/system"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/update"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/verify"
 )
 
@@ -59,6 +61,14 @@ type SyncFlags struct {
 	themeSet         bool
 }
 
+// CodeGraphUpgradeOutcome reports what the sync CodeGraph auto-upgrade step
+// did (or would do, in dry-run). Performed upgrades force NoOp=false so an
+// honest "nothing changed" report never hides a CLI reinstall.
+type CodeGraphUpgradeOutcome struct {
+	Pending, Performed, RolledBack bool
+	From, To, Warning              string
+}
+
 // SyncResult holds the outcome of a sync execution.
 type SyncResult struct {
 	Agents    []model.AgentID
@@ -67,6 +77,10 @@ type SyncResult struct {
 	Execution pipeline.ExecutionResult
 	Verify    verify.Report
 	DryRun    bool
+	// CodeGraphUpgrade is non-nil when the CodeGraph community tool is part of
+	// the synced selection. The zero struct means the version check found no
+	// actionable state (up to date, not installed, dev build, or skipped).
+	CodeGraphUpgrade *CodeGraphUpgradeOutcome
 	// NoOp is true when no managed asset changes were needed:
 	// either no agents were discovered/provided, or all managed assets
 	// were already current (idempotent re-sync).
@@ -450,6 +464,10 @@ type syncRuntime struct {
 	state        *runtimeState
 	managedPaths []string
 	changedFiles []string // accumulates candidate paths reported by component injectors
+	// codeGraphUpgrade collects the auto-upgrade step's outcome so
+	// RunSyncWithSelection can surface it on SyncResult after execution.
+	// Allocated in stagePlan only when CodeGraph is selected.
+	codeGraphUpgrade *CodeGraphUpgradeOutcome
 }
 
 func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, error) {
@@ -539,6 +557,15 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 	}
 
 	if r.selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		r.codeGraphUpgrade = &CodeGraphUpgradeOutcome{}
+		apply = append(apply, &codeGraphUpgradeSyncStep{
+			id:           "sync:community-tool:codegraph-upgrade",
+			homeDir:      r.homeDir,
+			workspaceDir: r.workspaceDir,
+			runner:       codeGraphHomeRunner{homeDir: r.homeDir},
+			outcome:      r.codeGraphUpgrade,
+			changedFiles: &r.changedFiles,
+		})
 		apply = append(apply, &codeGraphGuidanceSyncStep{
 			id:           "sync:community-tool:codegraph-guidance",
 			homeDir:      r.homeDir,
@@ -701,6 +728,121 @@ type codeGraphGuidanceSyncStep struct {
 	runner       communitytool.Runner
 	changedFiles *[]string
 	before       map[string]syncFileSnapshot
+}
+
+// codeGraphUpgradeSyncStep checks the installed CodeGraph CLI against the
+// latest npm registry version and upgrades it in place before guidance
+// reconciliation runs. All failure modes except a failed rollback are
+// warn-and-continue: a broken registry or npm hiccup must never fail a sync
+// that already changed other files (design Decision 4).
+type codeGraphUpgradeSyncStep struct {
+	id           string
+	homeDir      string
+	workspaceDir string
+	runner       communitytool.Runner
+	outcome      *CodeGraphUpgradeOutcome
+	changedFiles *[]string
+}
+
+func (s *codeGraphUpgradeSyncStep) ID() string { return s.id }
+
+// codeGraphToolName is the update-registry name of the CodeGraph tool, used
+// both to filter the version check and to find its result.
+const codeGraphToolName = "codegraph"
+
+var (
+	// codeGraphVersionCheck runs the CodeGraph-filtered update check. Package
+	// var so tests can substitute a deterministic registry answer. The zero
+	// PlatformProfile is deliberate: CodeGraph is an npm-global tool, so the
+	// Homebrew-ownership branch never applies, and the profile only affects
+	// UpdateHint wording, which this path does not surface.
+	codeGraphVersionCheck = func(ctx context.Context) []update.UpdateResult {
+		return update.CheckFiltered(ctx, AppVersion, system.PlatformProfile{}, []string{codeGraphToolName})
+	}
+	// upgradeCodeGraphWithHome performs the upgrade with snapshot/rollback.
+	// Package var so sync tests never spawn real npm/codegraph subprocesses.
+	upgradeCodeGraphWithHome = communitytool.UpgradeCodeGraphWithHome
+)
+
+func (s *codeGraphUpgradeSyncStep) Run() error {
+	res, ok := codeGraphUpgradeCheckResult(codeGraphVersionCheck(context.Background()))
+	if !ok {
+		return nil
+	}
+	switch res.Status {
+	case update.UpdateAvailable:
+		s.outcome.From = res.InstalledVersion
+		s.outcome.To = res.LatestVersion
+		if _, err := upgradeCodeGraphWithHome(s.homeDir, s.workspaceDir, s.runner, communitytool.DetectorFunc(cmdLookPath)); err != nil {
+			// Design Decision 4, resolved deliberately: UpgradeCodeGraphWithHome
+			// returns one of two error shapes. A rollback SUCCESS ("… rolled
+			// back to captured CodeGraph <v> — sync continues") is
+			// warn-and-continue; a rollback FAILURE ("… rollback failed: …") is
+			// the only loud failure — the install may be corrupt and the
+			// pipeline snapshot becomes the backstop. The PR3a error contract
+			// carries "sync continues" in both messages, so the discriminator
+			// is the "rollback failed" marker, not the trailing wording.
+			if strings.Contains(err.Error(), "rollback failed") {
+				return err
+			}
+			s.outcome.RolledBack = true
+			s.outcome.Warning = err.Error()
+		} else {
+			s.outcome.Performed = true
+		}
+		// Managed paths are appended as content-compared candidates: a real
+		// rewire shows up in FilesChanged, while an npm-only reinstall leaves
+		// file contents untouched and relies on the NoOp=false guard instead.
+		if s.changedFiles != nil {
+			*s.changedFiles = append(*s.changedFiles, communitytool.CodeGraphManagedPaths(s.homeDir)...)
+		}
+		return nil
+	case update.CheckFailed:
+		// Resilient sync (spec SHALL): warn, preserve the install, succeed.
+		s.outcome.Warning = fmt.Sprintf("CodeGraph upgrade check failed: %v — existing installation left unchanged", res.Err)
+		return nil
+	default:
+		// UpToDate, NotInstalled, VersionUnknown, DevBuild: skip silently.
+		return nil
+	}
+}
+
+// codeGraphUpgradeCheckResult finds the CodeGraph entry in a filtered update
+// check. The filter already scopes the check to CodeGraph, so a missing entry
+// means the tool is not registered and the step has nothing to do.
+func codeGraphUpgradeCheckResult(results []update.UpdateResult) (update.UpdateResult, bool) {
+	for _, r := range results {
+		if r.Tool.Name == codeGraphToolName {
+			return r, true
+		}
+	}
+	return update.UpdateResult{}, false
+}
+
+// checkCodeGraphUpgradeDryRun performs the CodeGraph version check for the
+// dry-run report. It never executes an upgrade: an available update is
+// reported as Pending and a registry failure as a Warning. Returns nil when
+// CodeGraph is not part of the selection (no network call on unrelated
+// syncs); otherwise the outcome mirrors the execution path — non-nil, with
+// the zero struct meaning "nothing actionable".
+func checkCodeGraphUpgradeDryRun(selection model.Selection) *CodeGraphUpgradeOutcome {
+	if !selection.HasCommunityTool(model.CommunityToolCodeGraph) {
+		return nil
+	}
+	outcome := &CodeGraphUpgradeOutcome{}
+	res, ok := codeGraphUpgradeCheckResult(codeGraphVersionCheck(context.Background()))
+	if !ok {
+		return outcome
+	}
+	switch res.Status {
+	case update.UpdateAvailable:
+		outcome.Pending = true
+		outcome.From = res.InstalledVersion
+		outcome.To = res.LatestVersion
+	case update.CheckFailed:
+		outcome.Warning = fmt.Sprintf("CodeGraph upgrade check failed: %v — existing installation left unchanged", res.Err)
+	}
+	return outcome
 }
 
 type piCodeGraphSyncStep struct {
@@ -1358,6 +1500,7 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 		return result, err
 	}
 	result.FilesChanged = len(result.ChangedFiles)
+	result.CodeGraphUpgrade = rt.codeGraphUpgrade
 
 	// True no-op: agents were discovered but all managed assets were already
 	// current — no file was written or updated. Per spec scenario:
@@ -1365,6 +1508,12 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 	// and reports that no managed sync actions were needed."
 	if result.FilesChanged == 0 {
 		result.NoOp = true
+	}
+	// NoOp honesty (design Decision 5): an npm-global reinstall can leave
+	// every managed file byte-identical, so FilesChanged==0 alone must not
+	// produce a NoOp report when an upgrade was performed.
+	if result.CodeGraphUpgrade != nil && result.CodeGraphUpgrade.Performed {
+		result.NoOp = false
 	}
 
 	// Post-apply verification reuses the same component paths as install.
@@ -1510,6 +1659,9 @@ func RunSync(args []string) (SyncResult, error) {
 			return result, err
 		}
 		result.Plan = rt.stagePlan()
+		// Dry-Run Reporting (spec SHALL): run the CodeGraph version check so
+		// the report can surface a pending upgrade, but execute nothing.
+		result.CodeGraphUpgrade = checkCodeGraphUpgradeDryRun(selection)
 		return result, nil
 	}
 

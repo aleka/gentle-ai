@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,6 +27,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/state"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/update"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/verify"
 )
 
@@ -4515,4 +4519,317 @@ func TestSyncBackupTargetsContainNoDuplicatePaths(t *testing.T) {
 	targets := syncBackupTargets(home, "", selection, resolveAdapters(selection.Agents))
 
 	assertNoDuplicatePaths(t, "syncBackupTargets", targets)
+}
+
+// ─── PR3b: CodeGraph sync auto-upgrade ─────────────────────────────────────
+
+// TestSyncPlan_IncludesCodeGraphUpgradeBeforeGuidance verifies that when the
+// CodeGraph community tool is selected, the sync plan runs the auto-upgrade
+// step BEFORE the guidance reconcile step (design Decision 2: upgrade rewires
+// the CLI first; guidance then reconciles the final state).
+func TestSyncPlan_IncludesCodeGraphUpgradeBeforeGuidance(t *testing.T) {
+	home := t.TempDir()
+	rt, err := newSyncRuntime(home, model.Selection{
+		Agents:         []model.AgentID{model.AgentOpenCode},
+		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := rt.stagePlan()
+
+	upgradeIdx, guidanceIdx := -1, -1
+	for i, step := range plan.Apply {
+		switch step.ID() {
+		case "sync:community-tool:codegraph-upgrade":
+			upgradeIdx = i
+		case "sync:community-tool:codegraph-guidance":
+			guidanceIdx = i
+		}
+	}
+	if upgradeIdx == -1 {
+		t.Fatalf("sync plan missing sync:community-tool:codegraph-upgrade step")
+	}
+	if guidanceIdx == -1 {
+		t.Fatalf("sync plan missing sync:community-tool:codegraph-guidance step")
+	}
+	if upgradeIdx >= guidanceIdx {
+		t.Fatalf("codegraph-upgrade step index %d, want before codegraph-guidance index %d", upgradeIdx, guidanceIdx)
+	}
+}
+
+// TestSyncPlan_OmitsCodeGraphUpgradeWhenNotSelected triangulates the ordering
+// test: without the CodeGraph community tool selected, the upgrade step must
+// not appear in the plan at all (no network check on unrelated syncs).
+func TestSyncPlan_OmitsCodeGraphUpgradeWhenNotSelected(t *testing.T) {
+	home := t.TempDir()
+	rt, err := newSyncRuntime(home, model.Selection{
+		Agents: []model.AgentID{model.AgentOpenCode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasStepID(rt.stagePlan().Apply, "sync:community-tool:codegraph-upgrade") {
+		t.Fatalf("sync plan includes codegraph-upgrade step without CodeGraph selected")
+	}
+}
+
+// TestCodeGraphUpgradeSyncStep covers the step's behavior matrix (design
+// Decision 4): update-available performs the upgrade, registry failures warn
+// and continue, non-actionable statuses skip silently, a successful rollback
+// warns and continues, and only a rollback FAILURE fails sync loudly.
+func TestCodeGraphUpgradeSyncStep(t *testing.T) {
+	rollbackSuccessErr := errors.New("codegraph upgrade failed: boom; rolled back to captured CodeGraph 1.4.1 — sync continues")
+	rollbackFailureErr := errors.New("codegraph upgrade failed: boom; rollback failed: disk full — sync continues, but reinstall manually with `npm install -g @colbymchenry/codegraph@1.4.1`")
+
+	tests := []struct {
+		name              string
+		check             update.UpdateResult
+		upgradeErr        error
+		wantErr           bool
+		wantUpgradeCalled bool
+		wantPerformed     bool
+		wantRolledBack    bool
+		wantFromTo        [2]string
+		wantWarning       string // substring; "" means Warning must be empty
+		wantCandidates    bool
+	}{
+		{
+			name:              "update available performs upgrade",
+			check:             update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpdateAvailable, InstalledVersion: "1.4.1", LatestVersion: "1.5.0"},
+			wantUpgradeCalled: true,
+			wantPerformed:     true,
+			wantFromTo:        [2]string{"1.4.1", "1.5.0"},
+			wantCandidates:    true,
+		},
+		{
+			name:        "registry failure warns and continues",
+			check:       update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.CheckFailed, Err: errors.New("npm registry returned HTTP 500")},
+			wantWarning: "HTTP 500",
+		},
+		{
+			name:  "up to date skips silently",
+			check: update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpToDate, InstalledVersion: "1.5.0", LatestVersion: "1.5.0"},
+		},
+		{
+			name:  "not installed skips silently",
+			check: update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.NotInstalled},
+		},
+		{
+			name:  "dev build skips silently",
+			check: update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.DevBuild, InstalledVersion: "dev"},
+		},
+		{
+			name:              "upgrade failure with successful rollback warns and continues",
+			check:             update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpdateAvailable, InstalledVersion: "1.4.1", LatestVersion: "1.5.0"},
+			upgradeErr:        rollbackSuccessErr,
+			wantUpgradeCalled: true,
+			wantRolledBack:    true,
+			wantFromTo:        [2]string{"1.4.1", "1.5.0"},
+			wantWarning:       "rolled back to captured",
+			wantCandidates:    true,
+		},
+		{
+			name:              "rollback failure fails sync loudly",
+			check:             update.UpdateResult{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpdateAvailable, InstalledVersion: "1.4.1", LatestVersion: "1.5.0"},
+			upgradeErr:        rollbackFailureErr,
+			wantUpgradeCalled: true,
+			wantErr:           true,
+			wantFromTo:        [2]string{"1.4.1", "1.5.0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			// Make OpenCode discoverable so CodeGraphManagedPaths is non-empty
+			// and the step has real managed-path candidates to append.
+			mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("managed\n"))
+			restoreCheck := codeGraphVersionCheck
+			restoreUpgrade := upgradeCodeGraphWithHome
+			t.Cleanup(func() {
+				codeGraphVersionCheck = restoreCheck
+				upgradeCodeGraphWithHome = restoreUpgrade
+			})
+
+			codeGraphVersionCheck = func(context.Context) []update.UpdateResult {
+				return []update.UpdateResult{tt.check}
+			}
+			upgradeCalled := false
+			var gotHome, gotWorkspace string
+			upgradeCodeGraphWithHome = func(homeDir, workspaceDir string, runner communitytool.Runner, detector communitytool.Detector) (communitytool.Result, error) {
+				upgradeCalled = true
+				gotHome, gotWorkspace = homeDir, workspaceDir
+				return communitytool.Result{}, tt.upgradeErr
+			}
+
+			outcome := &CodeGraphUpgradeOutcome{}
+			var changed []string
+			step := &codeGraphUpgradeSyncStep{
+				id:           "sync:community-tool:codegraph-upgrade",
+				homeDir:      home,
+				workspaceDir: "/ws",
+				outcome:      outcome,
+				changedFiles: &changed,
+			}
+
+			err := step.Run()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Run() error = nil, want non-nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Run() error = %v, want nil", err)
+			}
+			if upgradeCalled != tt.wantUpgradeCalled {
+				t.Fatalf("upgrade called = %v, want %v", upgradeCalled, tt.wantUpgradeCalled)
+			}
+			if tt.wantUpgradeCalled && (gotHome != home || gotWorkspace != "/ws") {
+				t.Fatalf("upgrade called with home=%q workspace=%q, want %q /ws", gotHome, gotWorkspace, home)
+			}
+			if outcome.Performed != tt.wantPerformed || outcome.RolledBack != tt.wantRolledBack {
+				t.Fatalf("outcome = %+v, want Performed=%v RolledBack=%v", outcome, tt.wantPerformed, tt.wantRolledBack)
+			}
+			if outcome.Pending {
+				t.Fatalf("outcome.Pending = true; Pending is dry-run only and must never be set by the step")
+			}
+			if (outcome.From != tt.wantFromTo[0]) || (outcome.To != tt.wantFromTo[1]) {
+				t.Fatalf("outcome From/To = %q/%q, want %q/%q", outcome.From, outcome.To, tt.wantFromTo[0], tt.wantFromTo[1])
+			}
+			if tt.wantWarning == "" && outcome.Warning != "" {
+				t.Fatalf("outcome.Warning = %q, want empty", outcome.Warning)
+			}
+			if tt.wantWarning != "" && !strings.Contains(outcome.Warning, tt.wantWarning) {
+				t.Fatalf("outcome.Warning = %q, want substring %q", outcome.Warning, tt.wantWarning)
+			}
+			if gotCandidates := len(changed) > 0; gotCandidates != tt.wantCandidates {
+				t.Fatalf("changed candidates present = %v, want %v (candidates: %v)", gotCandidates, tt.wantCandidates, changed)
+			}
+		})
+	}
+}
+
+// setupCodeGraphSyncHome prepares a temp home with CodeGraph selected for the
+// given agent and swaps every subprocess-touching seam (home dir, backup home,
+// runCommand, cmdLookPath) plus the upgrade executor, whose call count is
+// returned so tests can assert whether an upgrade ran.
+func setupCodeGraphSyncHome(t *testing.T, agent string) *int {
+	t.Helper()
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents:          []string{agent},
+		SelectionConfigured:      true,
+		CommunityTools:           []string{"codegraph"},
+		CommunityToolsConfigured: true,
+		Persona:                  "neutral",
+	}); err != nil {
+		t.Fatalf("state.Write() error = %v", err)
+	}
+
+	restoreHome := osUserHomeDir
+	restoreBackupHome := backup.UserHomeDirFn
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	restoreUpgrade := upgradeCodeGraphWithHome
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		backup.UserHomeDirFn = restoreBackupHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+		upgradeCodeGraphWithHome = restoreUpgrade
+	})
+
+	osUserHomeDir = func() (string, error) { return home, nil }
+	backup.UserHomeDirFn = func() (string, error) { return home, nil }
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+	upgradeCalls := 0
+	upgradeCodeGraphWithHome = func(homeDir, workspaceDir string, runner communitytool.Runner, detector communitytool.Detector) (communitytool.Result, error) {
+		upgradeCalls++
+		return communitytool.Result{}, nil
+	}
+	return &upgradeCalls
+}
+
+// stubCodeGraphVersionCheck swaps the version-check seam to return a single
+// deterministic CodeGraph result (no network, no local binary detection).
+func stubCodeGraphVersionCheck(t *testing.T, result update.UpdateResult) {
+	t.Helper()
+	restore := codeGraphVersionCheck
+	t.Cleanup(func() { codeGraphVersionCheck = restore })
+	codeGraphVersionCheck = func(context.Context) []update.UpdateResult {
+		return []update.UpdateResult{result}
+	}
+}
+
+// TestSyncCodeGraphUpgrade_DryRunReportsPending verifies the Dry-Run Reporting
+// spec: with --dry-run and an upgrade available, RunSync reports the pending
+// upgrade with from/to versions, executes nothing, and never reports NoOp.
+func TestSyncCodeGraphUpgrade_DryRunReportsPending(t *testing.T) {
+	upgradeCalls := setupCodeGraphSyncHome(t, "opencode")
+	stubCodeGraphVersionCheck(t, update.UpdateResult{
+		Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpdateAvailable,
+		InstalledVersion: "1.4.1", LatestVersion: "1.5.0",
+	})
+
+	result, err := RunSync([]string{"--agents", "opencode", "--dry-run"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v", err)
+	}
+	if !result.DryRun {
+		t.Fatalf("DryRun = false, want true")
+	}
+	if result.CodeGraphUpgrade == nil {
+		t.Fatalf("CodeGraphUpgrade = nil, want pending outcome")
+	}
+	if !result.CodeGraphUpgrade.Pending {
+		t.Fatalf("CodeGraphUpgrade.Pending = false, want true (outcome: %+v)", *result.CodeGraphUpgrade)
+	}
+	if result.CodeGraphUpgrade.Performed || result.CodeGraphUpgrade.RolledBack {
+		t.Fatalf("dry-run must not report Performed/RolledBack (outcome: %+v)", *result.CodeGraphUpgrade)
+	}
+	if result.CodeGraphUpgrade.From != "1.4.1" || result.CodeGraphUpgrade.To != "1.5.0" {
+		t.Fatalf("From/To = %q/%q, want 1.4.1/1.5.0", result.CodeGraphUpgrade.From, result.CodeGraphUpgrade.To)
+	}
+	if *upgradeCalls != 0 {
+		t.Fatalf("dry-run executed %d CodeGraph upgrades; want check-only", *upgradeCalls)
+	}
+	if len(result.Execution.Apply.Steps) != 0 || len(result.Execution.Prepare.Steps) != 0 {
+		t.Fatalf("execution should be empty in dry-run")
+	}
+	if result.NoOp {
+		t.Fatalf("NoOp = true with a pending CodeGraph upgrade; pending work must keep NoOp false")
+	}
+}
+
+// TestSyncCodeGraphUpgrade_RegistryDownWarnsAndContinues verifies the
+// Resilient Sync spec (SHALL): when the npm registry is unreachable/errors,
+// sync warns, preserves the existing installation, and succeeds. It exercises
+// the REAL update.CheckFiltered path end-to-end against an httptest registry
+// (only the registry base URL seam is redirected).
+func TestSyncCodeGraphUpgrade_RegistryDownWarnsAndContinues(t *testing.T) {
+	upgradeCalls := setupCodeGraphSyncHome(t, "claude-code")
+
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(registry.Close)
+	restoreRegistry := update.SetNpmRegistryBaseURL(registry.URL)
+	t.Cleanup(restoreRegistry)
+
+	result, err := RunSync([]string{"--agents", "claude-code"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v; registry failure must not fail sync", err)
+	}
+	if result.CodeGraphUpgrade == nil {
+		t.Fatalf("CodeGraphUpgrade = nil, want warning outcome")
+	}
+	if !strings.Contains(result.CodeGraphUpgrade.Warning, "HTTP 500") {
+		t.Fatalf("Warning = %q, want it to mention the registry HTTP 500", result.CodeGraphUpgrade.Warning)
+	}
+	if result.CodeGraphUpgrade.Performed || result.CodeGraphUpgrade.Pending || result.CodeGraphUpgrade.RolledBack {
+		t.Fatalf("outcome = %+v; registry failure must not mark Performed/Pending/RolledBack", *result.CodeGraphUpgrade)
+	}
+	if *upgradeCalls != 0 {
+		t.Fatalf("upgrade executed %d times despite registry failure; existing installation must be preserved", *upgradeCalls)
+	}
 }
