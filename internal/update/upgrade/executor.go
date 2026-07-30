@@ -615,6 +615,12 @@ func effectiveMethod(tool update.ToolInfo, profile system.PlatformProfile) updat
 	if tool.InstallMethod == update.InstallOpenCodePlugin {
 		return update.InstallOpenCodePlugin
 	}
+	// npm-global tools are never brew-owned and have no GoImportPath, so they
+	// always keep their declared method. Short-circuiting here also avoids the
+	// Homebrew ownership probe below, which cannot own an npm package.
+	if tool.InstallMethod == update.InstallNpmGlobal {
+		return update.InstallNpmGlobal
+	}
 	if profile.PackageManager == "brew" && homebrewPackageInstalled(tool.Name) {
 		return update.InstallBrew
 	}

@@ -64,10 +64,11 @@ const maxScriptSize = 1 * 1024 * 1024 // 1 MB
 //   - script method + linux/darwin + other → scriptUpgrade (curl | bash install.sh)
 //   - script method + windows → manualFallback
 //   - OpenCode plugin method → update materialized package in ~/.config/opencode when possible
+//   - npm-global method → npmGlobalUpgrade (`npm install -g <pkg>@latest`)
 //   - unknown method → manualFallback with explicit message
 func runStrategy(ctx context.Context, r update.UpdateResult, profile system.PlatformProfile) (bool, error) {
 	ownership := update.HomebrewNone
-	if profile.PackageManager == "brew" && r.Tool.InstallMethod != update.InstallOpenCodePlugin {
+	if profile.PackageManager == "brew" && r.Tool.InstallMethod != update.InstallOpenCodePlugin && r.Tool.InstallMethod != update.InstallNpmGlobal {
 		var err error
 		ownership, err = homebrewOwnershipDetector(r.Tool.Name)
 		if err != nil {
@@ -102,12 +103,38 @@ func runStrategy(ctx context.Context, r update.UpdateResult, profile system.Plat
 		return false, scriptUpgrade(ctx, r, profile)
 	case update.InstallOpenCodePlugin:
 		return false, opencodePluginUpgrade(ctx, r)
+	case update.InstallNpmGlobal:
+		return false, npmGlobalUpgrade(ctx, r)
 	default:
 		return false, &ManualFallbackError{
 			Hint: fmt.Sprintf("upgrade %q: unsupported install method %q — please update manually. See: https://github.com/Gentleman-Programming/%s",
 				r.Tool.Name, method, r.Tool.Repo),
 		}
 	}
+}
+
+// npmGlobalUpgrade upgrades a globally-installed npm CLI by running
+// `npm install -g <pkg>@latest`. This is a binary upgrade only: any agent
+// re-wiring that must follow the upgrade is handled outside the executor.
+func npmGlobalUpgrade(ctx context.Context, r update.UpdateResult) error {
+	pkg := strings.TrimSpace(r.Tool.NpmPackage)
+	if pkg == "" {
+		return &ManualFallbackError{Hint: fmt.Sprintf("upgrade %q: NpmPackage is empty — please update the tool manually with npm install -g", r.Tool.Name)}
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	target := pkg + "@latest"
+	cmd := execCommand("npm", "install", "-g", target)
+	cmd.Stdin = nil
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("npm install -g %s: %w (output: %s)", target, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func opencodePluginUpgrade(ctx context.Context, r update.UpdateResult) error {
