@@ -46,19 +46,24 @@ type SyncFlags struct {
 	IncludePermissions bool
 	IncludeTheme       bool
 	DryRun             bool
+	// ForceCommunityTools bypasses the satisfied-install gate for community
+	// tools (CodeGraph only in this change): sync reinstalls the latest CLI
+	// and rewires detected targets even when everything looks up to date.
+	ForceCommunityTools bool
 	// Profiles holds named SDD profiles parsed from --profile flags.
 	// Each entry is populated by parseProfileFlag and augmented by
 	// parseProfilePhaseFlag.
 	Profiles []model.Profile
 	// rawProfiles and rawProfilePhases hold the raw string values from
 	// --profile and --profile-phase flags before parsing into model.Profile.
-	rawProfiles      []string
-	rawProfilePhases []string
-	skillsSet        bool
-	sddModeSet       bool
-	strictTDDSet     bool
-	permissionsSet   bool
-	themeSet         bool
+	rawProfiles            []string
+	rawProfilePhases       []string
+	skillsSet              bool
+	sddModeSet             bool
+	strictTDDSet           bool
+	permissionsSet         bool
+	themeSet               bool
+	forceCommunityToolsSet bool
 }
 
 // CodeGraphUpgradeOutcome reports what the sync CodeGraph auto-upgrade step
@@ -118,6 +123,7 @@ func ParseSyncFlags(args []string) (SyncFlags, error) {
 	fs.BoolVar(&opts.IncludePermissions, "include-permissions", false, "include permissions component in sync")
 	fs.BoolVar(&opts.IncludeTheme, "include-theme", false, "include theme component in sync")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "preview plan without executing")
+	fs.BoolVar(&opts.ForceCommunityTools, "force-community-tools", false, "force reinstall of community tools (CodeGraph only): bypass the satisfied-install gate and rewire targets")
 	registerListFlag(fs, "profile", &opts.rawProfiles)
 	registerListFlag(fs, "profile-phase", &opts.rawProfilePhases)
 
@@ -147,6 +153,8 @@ func ParseSyncFlags(args []string) (SyncFlags, error) {
 			opts.permissionsSet = true
 		case "include-theme":
 			opts.themeSet = true
+		case "force-community-tools":
+			opts.forceCommunityToolsSet = true
 		}
 	})
 
@@ -365,6 +373,10 @@ func BuildSyncSelection(flags SyncFlags, agentIDs []model.AgentID) model.Selecti
 		StrictTDD:          flags.StrictTDD,
 		Skills:             skillIDs,
 		Profiles:           flags.Profiles,
+		// ForceCommunityTools is a one-shot CLI flag (never persisted): it
+		// reaches the CodeGraph upgrade step so a satisfied install is
+		// reinstalled instead of skipped.
+		ForceCommunityTools: flags.ForceCommunityTools,
 		// Preset is set to full-gentleman so selectedSkillIDs() returns the
 		// correct default skill set when no explicit skills are provided.
 		Preset: model.PresetFullGentleman,
@@ -565,6 +577,7 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 			runner:       codeGraphHomeRunner{homeDir: r.homeDir},
 			outcome:      r.codeGraphUpgrade,
 			changedFiles: &r.changedFiles,
+			force:        r.selection.ForceCommunityTools,
 		})
 		apply = append(apply, &codeGraphGuidanceSyncStep{
 			id:           "sync:community-tool:codegraph-guidance",
@@ -742,6 +755,12 @@ type codeGraphUpgradeSyncStep struct {
 	runner       communitytool.Runner
 	outcome      *CodeGraphUpgradeOutcome
 	changedFiles *[]string
+	// force bypasses the registry version gate (--force-community-tools):
+	// the step reinstalls the latest CLI and rewires targets without
+	// consulting npm, per the design data flow "force ─►
+	// UpgradeCodeGraphWithHome". The upgrade itself captures the installed
+	// version for rollback, so no registry round-trip is needed.
+	force bool
 }
 
 func (s *codeGraphUpgradeSyncStep) ID() string { return s.id }
@@ -765,6 +784,13 @@ var (
 )
 
 func (s *codeGraphUpgradeSyncStep) Run() error {
+	// --force-community-tools (spec: Forced Reinstall): skip the registry
+	// gate entirely, so a satisfied install or unreachable registry cannot
+	// block an explicit reinstall. No from/to pair is known without the
+	// check; the report renders the forced line instead.
+	if s.force {
+		return s.executeUpgrade()
+	}
 	res, ok := codeGraphUpgradeCheckResult(codeGraphVersionCheck(context.Background()))
 	if !ok {
 		return nil
@@ -773,30 +799,7 @@ func (s *codeGraphUpgradeSyncStep) Run() error {
 	case update.UpdateAvailable:
 		s.outcome.From = res.InstalledVersion
 		s.outcome.To = res.LatestVersion
-		if _, err := upgradeCodeGraphWithHome(s.homeDir, s.workspaceDir, s.runner, communitytool.DetectorFunc(cmdLookPath)); err != nil {
-			// Design Decision 4, resolved deliberately: UpgradeCodeGraphWithHome
-			// returns one of two error shapes. A rollback SUCCESS ("… rolled
-			// back to captured CodeGraph <v> — sync continues") is
-			// warn-and-continue; a rollback FAILURE ("… rollback failed: …") is
-			// the only loud failure — the install may be corrupt and the
-			// pipeline snapshot becomes the backstop. The PR3a error contract
-			// carries "sync continues" in both messages, so the discriminator
-			// is the "rollback failed" marker, not the trailing wording.
-			if strings.Contains(err.Error(), "rollback failed") {
-				return err
-			}
-			s.outcome.RolledBack = true
-			s.outcome.Warning = err.Error()
-		} else {
-			s.outcome.Performed = true
-		}
-		// Managed paths are appended as content-compared candidates: a real
-		// rewire shows up in FilesChanged, while an npm-only reinstall leaves
-		// file contents untouched and relies on the NoOp=false guard instead.
-		if s.changedFiles != nil {
-			*s.changedFiles = append(*s.changedFiles, communitytool.CodeGraphManagedPaths(s.homeDir)...)
-		}
-		return nil
+		return s.executeUpgrade()
 	case update.CheckFailed:
 		// Resilient sync (spec SHALL): warn, preserve the install, succeed.
 		s.outcome.Warning = fmt.Sprintf("CodeGraph upgrade check failed: %v — existing installation left unchanged", res.Err)
@@ -805,6 +808,36 @@ func (s *codeGraphUpgradeSyncStep) Run() error {
 		// UpToDate, NotInstalled, VersionUnknown, DevBuild: skip silently.
 		return nil
 	}
+}
+
+// executeUpgrade runs the upgrade with snapshot/rollback and classifies the
+// outcome.
+//
+// Design Decision 4, resolved deliberately: UpgradeCodeGraphWithHome
+// returns one of two error shapes. A rollback SUCCESS ("… rolled
+// back to captured CodeGraph <v> — sync continues") is
+// warn-and-continue; a rollback FAILURE ("… rollback failed: …") is
+// the only loud failure — the install may be corrupt and the
+// pipeline snapshot becomes the backstop. The PR3a error contract
+// carries "sync continues" in both messages, so the discriminator
+// is the "rollback failed" marker, not the trailing wording.
+func (s *codeGraphUpgradeSyncStep) executeUpgrade() error {
+	if _, err := upgradeCodeGraphWithHome(s.homeDir, s.workspaceDir, s.runner, communitytool.DetectorFunc(cmdLookPath)); err != nil {
+		if strings.Contains(err.Error(), "rollback failed") {
+			return err
+		}
+		s.outcome.RolledBack = true
+		s.outcome.Warning = err.Error()
+	} else {
+		s.outcome.Performed = true
+	}
+	// Managed paths are appended as content-compared candidates: a real
+	// rewire shows up in FilesChanged, while an npm-only reinstall leaves
+	// file contents untouched and relies on the NoOp=false guard instead.
+	if s.changedFiles != nil {
+		*s.changedFiles = append(*s.changedFiles, communitytool.CodeGraphManagedPaths(s.homeDir)...)
+	}
+	return nil
 }
 
 // codeGraphUpgradeCheckResult finds the CodeGraph entry in a filtered update
@@ -831,16 +864,21 @@ func checkCodeGraphUpgradeDryRun(selection model.Selection) *CodeGraphUpgradeOut
 	}
 	outcome := &CodeGraphUpgradeOutcome{}
 	res, ok := codeGraphUpgradeCheckResult(codeGraphVersionCheck(context.Background()))
-	if !ok {
-		return outcome
+	if ok {
+		switch res.Status {
+		case update.UpdateAvailable:
+			outcome.Pending = true
+			outcome.From = res.InstalledVersion
+			outcome.To = res.LatestVersion
+		case update.CheckFailed:
+			outcome.Warning = fmt.Sprintf("CodeGraph upgrade check failed: %v — existing installation left unchanged", res.Err)
+		}
 	}
-	switch res.Status {
-	case update.UpdateAvailable:
+	// Dry-run honesty under --force-community-tools: the real run would
+	// reinstall regardless of the registry answer, so the report must
+	// announce a pending reinstall even when the check says up to date.
+	if selection.ForceCommunityTools {
 		outcome.Pending = true
-		outcome.From = res.InstalledVersion
-		outcome.To = res.LatestVersion
-	case update.CheckFailed:
-		outcome.Warning = fmt.Sprintf("CodeGraph upgrade check failed: %v — existing installation left unchanged", res.Err)
 	}
 	return outcome
 }

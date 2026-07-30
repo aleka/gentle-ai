@@ -3067,6 +3067,66 @@ func TestParseSyncFlagsStrictTDD(t *testing.T) {
 	}
 }
 
+// TestParseSyncFlagsForceCommunityTools verifies that --force-community-tools
+// sets SyncFlags.ForceCommunityTools and records forceCommunityToolsSet using
+// the existing ...Set pattern (task 4.1).
+func TestParseSyncFlagsForceCommunityTools(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    bool
+		wantSet bool
+	}{
+		{
+			name:    "absent defaults to false and unset",
+			args:    []string{},
+			want:    false,
+			wantSet: false,
+		},
+		{
+			name:    "explicit flag sets force and set marker",
+			args:    []string{"--force-community-tools"},
+			want:    true,
+			wantSet: true,
+		},
+		{
+			name:    "explicit false still records set marker",
+			args:    []string{"--force-community-tools=false"},
+			want:    false,
+			wantSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, err := ParseSyncFlags(tt.args)
+			if err != nil {
+				t.Fatalf("ParseSyncFlags() error = %v", err)
+			}
+			if flags.ForceCommunityTools != tt.want {
+				t.Errorf("ForceCommunityTools = %v, want %v", flags.ForceCommunityTools, tt.want)
+			}
+			if flags.forceCommunityToolsSet != tt.wantSet {
+				t.Errorf("forceCommunityToolsSet = %v, want %v", flags.forceCommunityToolsSet, tt.wantSet)
+			}
+		})
+	}
+}
+
+// TestBuildSyncSelectionForceCommunityTools verifies the sync-side threading:
+// the flag value reaches model.Selection.ForceCommunityTools (task 4.4).
+func TestBuildSyncSelectionForceCommunityTools(t *testing.T) {
+	sel := BuildSyncSelection(SyncFlags{ForceCommunityTools: true}, nil)
+	if !sel.ForceCommunityTools {
+		t.Errorf("Selection.ForceCommunityTools = false, want true (should be propagated from flags)")
+	}
+
+	selDisabled := BuildSyncSelection(SyncFlags{ForceCommunityTools: false}, nil)
+	if selDisabled.ForceCommunityTools {
+		t.Errorf("Selection.ForceCommunityTools = true, want false")
+	}
+}
+
 // TestBuildSyncSelectionStrictTDD verifies that StrictTDD flag is passed
 // through to the Selection when building sync selection.
 func TestBuildSyncSelectionStrictTDD(t *testing.T) {
@@ -4705,6 +4765,173 @@ func TestCodeGraphUpgradeSyncStep(t *testing.T) {
 				t.Fatalf("changed candidates present = %v, want %v (candidates: %v)", gotCandidates, tt.wantCandidates, changed)
 			}
 		})
+	}
+}
+
+// TestCodeGraphUpgradeSyncStep_ForceBypassesSatisfiedGate verifies the
+// sync-side wiring of --force-community-tools (design data flow: "force ─►
+// UpgradeCodeGraphWithHome"): the step skips the registry version check
+// entirely and reinstalls, even when the install would look satisfied.
+func TestCodeGraphUpgradeSyncStep_ForceBypassesSatisfiedGate(t *testing.T) {
+	rollbackSuccessErr := errors.New("codegraph upgrade failed: boom; rolled back to captured CodeGraph 1.4.1 — sync continues")
+	rollbackFailureErr := errors.New("codegraph upgrade failed: boom; rollback failed: disk full — sync continues, but reinstall manually with `npm install -g @colbymchenry/codegraph@1.4.1`")
+
+	tests := []struct {
+		name              string
+		force             bool
+		upgradeErr        error
+		wantErr           bool
+		wantCheckCalls    int
+		wantUpgradeCalled bool
+		wantPerformed     bool
+		wantRolledBack    bool
+		wantWarning       string // substring; "" means Warning must be empty
+		wantCandidates    bool
+	}{
+		{
+			name:              "force reinstalls despite satisfied install",
+			force:             true,
+			wantCheckCalls:    0,
+			wantUpgradeCalled: true,
+			wantPerformed:     true,
+			wantCandidates:    true,
+		},
+		{
+			name:              "force with successful rollback warns and continues",
+			force:             true,
+			upgradeErr:        rollbackSuccessErr,
+			wantCheckCalls:    0,
+			wantUpgradeCalled: true,
+			wantRolledBack:    true,
+			wantWarning:       "rolled back to captured",
+			wantCandidates:    true,
+		},
+		{
+			name:              "force with rollback failure fails loudly",
+			force:             true,
+			upgradeErr:        rollbackFailureErr,
+			wantErr:           true,
+			wantCheckCalls:    0,
+			wantUpgradeCalled: true,
+			// A loud failure aborts before candidates are appended — same
+			// contract as the gated path (pipeline snapshot is the backstop).
+			wantCandidates: false,
+		},
+		{
+			name:           "no force consults the version check gate",
+			force:          false,
+			wantCheckCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			// Make OpenCode discoverable so CodeGraphManagedPaths is non-empty
+			// and the step has real managed-path candidates to append.
+			mustWriteFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("managed\n"))
+			restoreCheck := codeGraphVersionCheck
+			restoreUpgrade := upgradeCodeGraphWithHome
+			t.Cleanup(func() {
+				codeGraphVersionCheck = restoreCheck
+				upgradeCodeGraphWithHome = restoreUpgrade
+			})
+
+			checkCalls := 0
+			codeGraphVersionCheck = func(context.Context) []update.UpdateResult {
+				checkCalls++
+				return []update.UpdateResult{{Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpToDate, InstalledVersion: "1.5.0", LatestVersion: "1.5.0"}}
+			}
+			upgradeCalled := false
+			upgradeCodeGraphWithHome = func(homeDir, workspaceDir string, runner communitytool.Runner, detector communitytool.Detector) (communitytool.Result, error) {
+				upgradeCalled = true
+				return communitytool.Result{}, tt.upgradeErr
+			}
+
+			outcome := &CodeGraphUpgradeOutcome{}
+			var changed []string
+			step := &codeGraphUpgradeSyncStep{
+				id:           "sync:community-tool:codegraph-upgrade",
+				homeDir:      home,
+				workspaceDir: "/ws",
+				outcome:      outcome,
+				changedFiles: &changed,
+				force:        tt.force,
+			}
+
+			err := step.Run()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Run() error = nil, want non-nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Run() error = %v, want nil", err)
+			}
+			if checkCalls != tt.wantCheckCalls {
+				t.Fatalf("version check calls = %d, want %d (force must bypass the registry gate)", checkCalls, tt.wantCheckCalls)
+			}
+			if upgradeCalled != tt.wantUpgradeCalled {
+				t.Fatalf("upgrade called = %v, want %v", upgradeCalled, tt.wantUpgradeCalled)
+			}
+			if outcome.Performed != tt.wantPerformed || outcome.RolledBack != tt.wantRolledBack {
+				t.Fatalf("outcome = %+v, want Performed=%v RolledBack=%v", outcome, tt.wantPerformed, tt.wantRolledBack)
+			}
+			if tt.wantWarning == "" && outcome.Warning != "" {
+				t.Fatalf("outcome.Warning = %q, want empty", outcome.Warning)
+			}
+			if tt.wantWarning != "" && !strings.Contains(outcome.Warning, tt.wantWarning) {
+				t.Fatalf("outcome.Warning = %q, want substring %q", outcome.Warning, tt.wantWarning)
+			}
+			if gotCandidates := len(changed) > 0; gotCandidates != tt.wantCandidates {
+				t.Fatalf("changed candidates present = %v, want %v (candidates: %v)", gotCandidates, tt.wantCandidates, changed)
+			}
+		})
+	}
+}
+
+// TestSyncCodeGraphUpgrade_ForceRunsUpgradeWhenSatisfied drives the full
+// RunSync path: --force-community-tools must thread through BuildSyncSelection
+// into the stage plan and reinstall even when the registry says up to date.
+func TestSyncCodeGraphUpgrade_ForceRunsUpgradeWhenSatisfied(t *testing.T) {
+	upgradeCalls := setupCodeGraphSyncHome(t, "opencode")
+	stubCodeGraphVersionCheck(t, update.UpdateResult{
+		Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpToDate,
+		InstalledVersion: "1.5.0", LatestVersion: "1.5.0",
+	})
+
+	result, err := RunSync([]string{"--agents", "opencode", "--force-community-tools"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v", err)
+	}
+	if *upgradeCalls != 1 {
+		t.Fatalf("upgrade calls = %d, want 1 (force must bypass the satisfied gate)", *upgradeCalls)
+	}
+	if result.CodeGraphUpgrade == nil || !result.CodeGraphUpgrade.Performed {
+		t.Fatalf("CodeGraphUpgrade = %+v, want Performed=true", result.CodeGraphUpgrade)
+	}
+	if result.NoOp {
+		t.Fatal("NoOp = true; a performed forced reinstall must suppress the no-op report")
+	}
+}
+
+// TestSyncCodeGraphUpgrade_DryRunForceReportsPending verifies dry-run honesty
+// under --force-community-tools: the report announces the pending forced
+// reinstall and executes nothing.
+func TestSyncCodeGraphUpgrade_DryRunForceReportsPending(t *testing.T) {
+	upgradeCalls := setupCodeGraphSyncHome(t, "opencode")
+	stubCodeGraphVersionCheck(t, update.UpdateResult{
+		Tool: update.ToolInfo{Name: "codegraph"}, Status: update.UpToDate,
+		InstalledVersion: "1.5.0", LatestVersion: "1.5.0",
+	})
+
+	result, err := RunSync([]string{"--agents", "opencode", "--dry-run", "--force-community-tools"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v", err)
+	}
+	if *upgradeCalls != 0 {
+		t.Fatalf("upgrade calls = %d, want 0 in dry-run", *upgradeCalls)
+	}
+	if result.CodeGraphUpgrade == nil || !result.CodeGraphUpgrade.Pending {
+		t.Fatalf("CodeGraphUpgrade = %+v, want Pending=true for forced dry-run", result.CodeGraphUpgrade)
 	}
 }
 
