@@ -1295,6 +1295,38 @@ func TestUpgradePhaseCompletedClearsUpdateResults(t *testing.T) {
 	}
 }
 
+// TestWelcomeBannerSummaryLineIncludesCodeGraphVersionPair verifies task 4.9:
+// the welcome banner's update summary line (model.go View →
+// update.UpdateSummaryLine) includes the CodeGraph installed → latest pair
+// when a CodeGraph update is available (spec SHALL: banner shows both
+// versions). CodeGraph was registered for version checks in Phase 1, so this
+// locks the existing behavior at the banner integration point.
+func TestWelcomeBannerSummaryLineIncludesCodeGraphVersionPair(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenWelcome
+	m.UpdateResults = []update.UpdateResult{
+		{Tool: update.ToolInfo{Name: "codegraph"}, InstalledVersion: "1.4.1", LatestVersion: "1.5.0", Status: update.UpdateAvailable},
+	}
+	m.UpdateCheckDone = true
+
+	out := m.View()
+	if !strings.Contains(out, "codegraph 1.4.1 -> 1.5.0") {
+		t.Fatalf("welcome banner missing codegraph version pair; output:\n%s", out)
+	}
+
+	// Triangulate: no CodeGraph update → no pair in the banner.
+	m2 := NewModel(system.DetectionResult{}, "dev")
+	m2.Screen = ScreenWelcome
+	m2.UpdateResults = []update.UpdateResult{
+		{Tool: update.ToolInfo{Name: "codegraph"}, InstalledVersion: "1.5.0", LatestVersion: "1.5.0", Status: update.UpToDate},
+	}
+	m2.UpdateCheckDone = true
+	out2 := m2.View()
+	if strings.Contains(out2, "codegraph") && strings.Contains(out2, "Updates available") {
+		t.Fatalf("banner must not announce updates when CodeGraph is up to date; output:\n%s", out2)
+	}
+}
+
 func TestReportUpgradedGentleAI(t *testing.T) {
 	report := upgrade.UpgradeReport{Results: []upgrade.ToolUpgradeResult{
 		{ToolName: "engram", Status: upgrade.UpgradeSucceeded},

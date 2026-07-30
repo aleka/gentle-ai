@@ -1756,10 +1756,18 @@ func renderCodeGraphUpgradeOutcome(b *strings.Builder, outcome *CodeGraphUpgrade
 		return
 	}
 	switch {
+	case outcome.Performed && outcome.From == "" && outcome.To == "":
+		// Forced reinstall (--force-community-tools): the registry gate is
+		// skipped, so no from/to pair exists to render.
+		fmt.Fprintln(b, "CodeGraph reinstall forced: latest CLI reinstalled and detected targets rewired")
 	case outcome.Performed:
 		fmt.Fprintf(b, "CodeGraph upgraded: %s → %s\n", outcome.From, outcome.To)
+	case outcome.Pending && outcome.From == "" && outcome.To == "":
+		fmt.Fprintln(b, "CodeGraph reinstall pending (forced): run `gentle-ai sync` without --dry-run to apply")
 	case outcome.Pending:
 		fmt.Fprintf(b, "CodeGraph upgrade pending: %s → %s (run `gentle-ai sync` without --dry-run to apply)\n", outcome.From, outcome.To)
+	case outcome.RolledBack && outcome.From == "":
+		fmt.Fprintln(b, "CodeGraph forced reinstall rolled back: previous installation restored")
 	case outcome.RolledBack:
 		fmt.Fprintf(b, "CodeGraph upgrade rolled back: kept %s (attempted %s)\n", outcome.From, outcome.To)
 	}

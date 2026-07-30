@@ -7,14 +7,23 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/tui/styles"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/update"
 )
 
-func RenderCommunityTools(selected []model.CommunityToolID, cursor int, statuses []communitytool.Status, loading bool, statusErr error) string {
+func RenderCommunityTools(selected []model.CommunityToolID, cursor int, statuses []communitytool.Status, loading bool, statusErr error, updates []update.UpdateResult) string {
 	var b strings.Builder
 	b.WriteString(styles.TitleStyle.Render("Community Tools/Plugins"))
 	b.WriteString("\n\n")
 	b.WriteString(styles.SubtextStyle.Render("Optional cross-agent tools Gentle AI can install and wire for you."))
 	b.WriteString("\n\n")
+
+	// SHOULD-level version surfacing (spec: TUI Version Surfacing): when the
+	// update registry reports a CodeGraph update, show the same installed →
+	// latest pair the upgrade screen and welcome banner already display.
+	if from, to, ok := codeGraphUpdatePair(updates); ok {
+		b.WriteString(styles.SelectedStyle.Render(fmt.Sprintf("CodeGraph %s → %s update available", from, to)))
+		b.WriteString("\n\n")
+	}
 
 	if loading {
 		b.WriteString(styles.SelectedStyle.Render("⠋ Detecting installed tool and agent wiring…"))
@@ -72,6 +81,19 @@ func RenderCommunityTools(selected []model.CommunityToolID, cursor int, statuses
 
 func CommunityToolsOptionCount() int {
 	return len(communitytool.Definitions())*2 + 2
+}
+
+// codeGraphUpdatePair extracts the installed/latest version pair from update
+// results when — and only when — the CodeGraph entry reports an available
+// update. Up-to-date, failed, or missing entries yield ok=false so callers
+// render nothing.
+func codeGraphUpdatePair(updates []update.UpdateResult) (from, to string, ok bool) {
+	for _, r := range updates {
+		if r.Tool.Name == "codegraph" && r.Status == update.UpdateAvailable {
+			return r.InstalledVersion, r.LatestVersion, true
+		}
+	}
+	return "", "", false
 }
 
 func RenderCommunityToolInstalling(selected []model.CommunityToolID, spinner string, statuses []communitytool.Status) string {

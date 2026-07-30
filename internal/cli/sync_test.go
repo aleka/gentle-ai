@@ -4935,6 +4935,58 @@ func TestSyncCodeGraphUpgrade_DryRunForceReportsPending(t *testing.T) {
 	}
 }
 
+// TestRenderSyncReport_ForcedCodeGraphReinstallLines verifies the report lines
+// for a forced reinstall, where no registry from/to pair exists.
+func TestRenderSyncReport_ForcedCodeGraphReinstallLines(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  SyncResult
+		want    string
+		notWant string
+	}{
+		{
+			name: "performed forced reinstall without version pair",
+			result: SyncResult{
+				Agents:           []model.AgentID{model.AgentOpenCode},
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{Performed: true},
+			},
+			want:    "CodeGraph reinstall forced",
+			notWant: "CodeGraph upgraded:",
+		},
+		{
+			name: "pending forced reinstall without version pair",
+			result: SyncResult{
+				Agents:           []model.AgentID{model.AgentOpenCode},
+				DryRun:           true,
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{Pending: true},
+			},
+			want:    "CodeGraph reinstall pending (forced)",
+			notWant: "→",
+		},
+		{
+			name: "rolled back forced reinstall without version pair",
+			result: SyncResult{
+				Agents:           []model.AgentID{model.AgentOpenCode},
+				CodeGraphUpgrade: &CodeGraphUpgradeOutcome{RolledBack: true, Warning: "boom"},
+			},
+			want:    "CodeGraph forced reinstall rolled back",
+			notWant: "kept  (attempted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := RenderSyncReport(tt.result)
+			if !strings.Contains(out, tt.want) {
+				t.Fatalf("report missing %q; output:\n%s", tt.want, out)
+			}
+			if strings.Contains(out, tt.notWant) {
+				t.Fatalf("report must not contain %q for a forced reinstall without versions; output:\n%s", tt.notWant, out)
+			}
+		})
+	}
+}
+
 // setupCodeGraphSyncHome prepares a temp home with CodeGraph selected for the
 // given agent and swaps every subprocess-touching seam (home dir, backup home,
 // runCommand, cmdLookPath) plus the upgrade executor, whose call count is
