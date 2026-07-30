@@ -22,6 +22,11 @@ type Selection struct {
 	Profiles                         []Profile                        // named SDD profiles to generate/update during sync
 	OpenCodePlugins                  []OpenCodeCommunityPluginID      // optional community OpenCode TUI plugins
 	CommunityTools                   []CommunityToolID                // optional cross-agent community tools/plugins
+	// ForceCommunityTools is a one-shot CLI flag (--force-community-tools,
+	// never persisted): community tool install/upgrade steps bypass the
+	// satisfied-install gate and rerun the full install sequence. CodeGraph
+	// only in the version-aware upgrade change.
+	ForceCommunityTools bool
 }
 
 func (s Selection) HasCommunityTool(tool CommunityToolID) bool {

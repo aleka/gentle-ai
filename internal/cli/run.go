@@ -53,16 +53,16 @@ type InstallResult struct {
 }
 
 var (
-	osUserHomeDir                = os.UserHomeDir
-	osSetenv                     = os.Setenv
-	osStat                       = os.Stat
-	runCommand                   = executeCommand
-	cmdLookPath                  = exec.LookPath
-	streamCommandOutput          = true
-	goEnv                        = defaultGoEnv
-	installCommunityTool         = communitytool.Install
-	installCommunityToolWithHome = communitytool.InstallWithHome
-	pathEnvEntries               = func(profile system.PlatformProfile) []string {
+	osUserHomeDir                    = os.UserHomeDir
+	osSetenv                         = os.Setenv
+	osStat                           = os.Stat
+	runCommand                       = executeCommand
+	cmdLookPath                      = exec.LookPath
+	streamCommandOutput              = true
+	goEnv                            = defaultGoEnv
+	installCommunityTool             = communitytool.Install
+	installCommunityToolWithHomeOpts = communitytool.InstallWithHomeOpts
+	pathEnvEntries                   = func(profile system.PlatformProfile) []string {
 		return splitPathForOS(os.Getenv("PATH"), profile.OS)
 	}
 	addUserPath         = system.AddToUserPath
@@ -623,7 +623,7 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 	}
 
 	for _, tool := range r.selection.CommunityTools {
-		apply = append(apply, communityToolInstallStep{id: "community-tool:" + string(tool), tool: tool, workspaceDir: r.workspaceDir, homeDir: r.homeDir, state: r.state})
+		apply = append(apply, communityToolInstallStep{id: "community-tool:" + string(tool), tool: tool, workspaceDir: r.workspaceDir, homeDir: r.homeDir, state: r.state, force: r.selection.ForceCommunityTools})
 	}
 
 	for _, component := range r.resolved.OrderedComponents {
@@ -1062,12 +1062,16 @@ type communityToolInstallStep struct {
 	workspaceDir string
 	homeDir      string
 	state        *runtimeState
+	// force carries Selection.ForceCommunityTools
+	// (--force-community-tools): the installer bypasses the satisfied-install
+	// reconcile gate and reruns the full install sequence.
+	force bool
 }
 
 func (s communityToolInstallStep) ID() string { return s.id }
 
 func (s communityToolInstallStep) Run() error {
-	result, err := installCommunityToolWithHome(s.tool, s.workspaceDir, s.homeDir, communitytool.RunnerFunc(runCommand), communitytool.DetectorFunc(cmdLookPath))
+	result, err := installCommunityToolWithHomeOpts(s.tool, s.workspaceDir, s.homeDir, communitytool.RunnerFunc(runCommand), communitytool.DetectorFunc(cmdLookPath), communitytool.InstallOpts{ForceReinstall: s.force})
 	if err != nil {
 		return fmt.Errorf("install community tool %q: %w", s.tool, err)
 	}

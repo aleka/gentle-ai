@@ -285,6 +285,66 @@ func TestNormalizeInstallFlagsSDDModeMulti(t *testing.T) {
 	}
 }
 
+// TestParseInstallFlagsForceCommunityTools verifies that
+// --force-community-tools sets InstallFlags.ForceCommunityTools (task 4.2).
+func TestParseInstallFlagsForceCommunityTools(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{
+			name: "absent defaults to false",
+			args: []string{"--agent", "opencode"},
+			want: false,
+		},
+		{
+			name: "explicit flag sets force",
+			args: []string{"--agent", "opencode", "--force-community-tools"},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, err := ParseInstallFlags(tt.args)
+			if err != nil {
+				t.Fatalf("ParseInstallFlags() error = %v", err)
+			}
+			if flags.ForceCommunityTools != tt.want {
+				t.Fatalf("flags.ForceCommunityTools = %v, want %v", flags.ForceCommunityTools, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeInstallFlagsForceCommunityTools verifies the install-side
+// threading: the flag reaches Selection.ForceCommunityTools so the stage plan
+// can force-reinstall community tools (task 4.4).
+func TestNormalizeInstallFlagsForceCommunityTools(t *testing.T) {
+	input, err := NormalizeInstallFlags(
+		InstallFlags{ForceCommunityTools: true},
+		system.DetectionResult{},
+	)
+	if err != nil {
+		t.Fatalf("NormalizeInstallFlags() error = %v", err)
+	}
+	if !input.Selection.ForceCommunityTools {
+		t.Fatalf("Selection.ForceCommunityTools = false, want true")
+	}
+
+	inputDisabled, err := NormalizeInstallFlags(
+		InstallFlags{},
+		system.DetectionResult{},
+	)
+	if err != nil {
+		t.Fatalf("NormalizeInstallFlags() error = %v", err)
+	}
+	if inputDisabled.Selection.ForceCommunityTools {
+		t.Fatalf("Selection.ForceCommunityTools = true, want false when flag absent")
+	}
+}
+
 func TestNormalizeInstallFlagsSDDModeInvalid(t *testing.T) {
 	_, err := NormalizeInstallFlags(
 		InstallFlags{SDDMode: "turbo"},

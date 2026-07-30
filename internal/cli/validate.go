@@ -64,6 +64,10 @@ func NormalizeInstallFlags(flags InstallFlags, detection system.DetectionResult)
 	}
 	selection.SDDMode = sddMode
 
+	// One-shot force flag: reaches communityToolInstallStep via the stage
+	// plan so --force-community-tools reinstalls instead of reconciling.
+	selection.ForceCommunityTools = flags.ForceCommunityTools
+
 	scope, err := ResolveInstallScope(flags.Scope)
 	if err != nil {
 		return InstallInput{}, err

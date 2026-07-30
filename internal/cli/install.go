@@ -17,6 +17,10 @@ type InstallFlags struct {
 	Scope      string
 	Channel    string
 	DryRun     bool
+	// ForceCommunityTools bypasses the satisfied-install reconcile gate for
+	// community tools (CodeGraph only in this change): install reruns the
+	// full install sequence even when the tool already looks healthy.
+	ForceCommunityTools bool
 }
 
 const installChannelHelp = "Gentle AI channel: stable (default), beta, or nightly (alias for beta) — env: GENTLE_AI_CHANNEL"
@@ -35,6 +39,7 @@ FLAGS
   --scope global|workspace           Install scope (env: GENTLE_AI_INSTALL_SCOPE)
   --channel stable|beta|nightly      Release channel; nightly is an alias for beta (env: GENTLE_AI_CHANNEL)
   --dry-run                          Preview plan without executing
+  --force-community-tools            Force reinstall of community tools (CodeGraph only)
   --help, -h                         Show this help
 `)
 }
@@ -56,6 +61,7 @@ func ParseInstallFlags(args []string) (InstallFlags, error) {
 	fs.StringVar(&opts.Scope, "scope", "", "install scope: global (default) or workspace — env: GENTLE_AI_INSTALL_SCOPE")
 	fs.StringVar(&opts.Channel, "channel", "", installChannelHelp)
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "preview plan without executing")
+	fs.BoolVar(&opts.ForceCommunityTools, "force-community-tools", false, "force reinstall of community tools (CodeGraph only): bypass the satisfied-install gate")
 
 	if err := fs.Parse(args); err != nil {
 		return InstallFlags{}, err

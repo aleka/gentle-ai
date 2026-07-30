@@ -403,10 +403,10 @@ func TestComponentSyncStepOmitsCodeGraphGuidanceFromLegacyMarkerWithoutSelection
 }
 
 func TestCommunityToolInstallStepUsesInjectableInstaller(t *testing.T) {
-	previousInstall := installCommunityToolWithHome
+	previousInstall := installCommunityToolWithHomeOpts
 	previousRunCommand := runCommand
 	t.Cleanup(func() {
-		installCommunityToolWithHome = previousInstall
+		installCommunityToolWithHomeOpts = previousInstall
 		runCommand = previousRunCommand
 	})
 
@@ -418,10 +418,13 @@ func TestCommunityToolInstallStepUsesInjectableInstaller(t *testing.T) {
 	var gotTool model.CommunityToolID
 	var gotWorkspace string
 	var runner communitytool.Runner
-	installCommunityToolWithHome = func(tool model.CommunityToolID, workspaceDir string, _ string, r communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+	installCommunityToolWithHomeOpts = func(tool model.CommunityToolID, workspaceDir string, _ string, r communitytool.Runner, _ communitytool.Detector, opts communitytool.InstallOpts) (communitytool.Result, error) {
 		gotTool = tool
 		gotWorkspace = workspaceDir
 		runner = r
+		if opts.ForceReinstall {
+			t.Error("ForceReinstall = true, want false when step force is unset")
+		}
 		return communitytool.Result{Tool: tool}, nil
 	}
 
@@ -435,10 +438,10 @@ func TestCommunityToolInstallStepUsesInjectableInstaller(t *testing.T) {
 }
 
 func TestCommunityToolInstallStepPassesRuntimeHomeToPiReconciler(t *testing.T) {
-	previous := installCommunityToolWithHome
-	t.Cleanup(func() { installCommunityToolWithHome = previous })
+	previous := installCommunityToolWithHomeOpts
+	t.Cleanup(func() { installCommunityToolWithHomeOpts = previous })
 	var gotHome string
-	installCommunityToolWithHome = func(_ model.CommunityToolID, _ string, home string, _ communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+	installCommunityToolWithHomeOpts = func(_ model.CommunityToolID, _ string, home string, _ communitytool.Runner, _ communitytool.Detector, _ communitytool.InstallOpts) (communitytool.Result, error) {
 		gotHome = home
 		return communitytool.Result{Tool: model.CommunityToolCodeGraph}, nil
 	}
@@ -452,10 +455,10 @@ func TestCommunityToolInstallStepPassesRuntimeHomeToPiReconciler(t *testing.T) {
 }
 
 func TestInstallPipelinePropagatesInitialPiPendingWhenPiUnselected(t *testing.T) {
-	previous := installCommunityToolWithHome
-	t.Cleanup(func() { installCommunityToolWithHome = previous })
+	previous := installCommunityToolWithHomeOpts
+	t.Cleanup(func() { installCommunityToolWithHomeOpts = previous })
 	pending := communitytool.PiCodeGraphResult{ManualActions: []string{"Pi CodeGraph runtime verification is pending."}}
-	installCommunityToolWithHome = func(_ model.CommunityToolID, _ string, _ string, _ communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+	installCommunityToolWithHomeOpts = func(_ model.CommunityToolID, _ string, _ string, _ communitytool.Runner, _ communitytool.Detector, _ communitytool.InstallOpts) (communitytool.Result, error) {
 		return communitytool.Result{Tool: model.CommunityToolCodeGraph, PiCodeGraph: &pending}, nil
 	}
 	runtime := &installRuntime{
@@ -475,14 +478,14 @@ func TestInstallPipelinePropagatesInitialPiPendingWhenPiUnselected(t *testing.T)
 }
 
 func TestInstallPipelineDoesNotDuplicatePiPendingWhenSelected(t *testing.T) {
-	previousInstall := installCommunityToolWithHome
+	previousInstall := installCommunityToolWithHomeOpts
 	previousReconcile := reconcilePiCodeGraph
 	t.Cleanup(func() {
-		installCommunityToolWithHome = previousInstall
+		installCommunityToolWithHomeOpts = previousInstall
 		reconcilePiCodeGraph = previousReconcile
 	})
 	pending := communitytool.PiCodeGraphResult{ManualActions: []string{"Pi CodeGraph integration remains pending: CodeGraph configuration was installed and preserved, and direct MCP capability was verified. Pi adapter activation health cannot be machine-verified on the detected Pi version."}}
-	installCommunityToolWithHome = func(_ model.CommunityToolID, _ string, _ string, _ communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+	installCommunityToolWithHomeOpts = func(_ model.CommunityToolID, _ string, _ string, _ communitytool.Runner, _ communitytool.Detector, _ communitytool.InstallOpts) (communitytool.Result, error) {
 		return communitytool.Result{Tool: model.CommunityToolCodeGraph, PiCodeGraph: &pending}, nil
 	}
 	reconcilePiCodeGraph = func(communitytool.PiCodeGraphOptions) (communitytool.PiCodeGraphResult, error) {
@@ -608,4 +611,72 @@ func installFakeCodeGraphMCP(t *testing.T, tools string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestCommunityToolInstallStepPassesForceReinstall verifies task 4.5/4.6: when
+// the step carries force (from Selection.ForceCommunityTools), the installer
+// seam receives InstallOpts{ForceReinstall: true}; without force it receives
+// zero opts, preserving the historical reconcile-only behavior.
+func TestCommunityToolInstallStepPassesForceReinstall(t *testing.T) {
+	previous := installCommunityToolWithHomeOpts
+	t.Cleanup(func() { installCommunityToolWithHomeOpts = previous })
+
+	tests := []struct {
+		name      string
+		force     bool
+		wantForce bool
+	}{
+		{name: "force flag passes ForceReinstall=true", force: true, wantForce: true},
+		{name: "no force passes ForceReinstall=false", force: false, wantForce: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotOpts communitytool.InstallOpts
+			called := false
+			installCommunityToolWithHomeOpts = func(_ model.CommunityToolID, _ string, _ string, _ communitytool.Runner, _ communitytool.Detector, opts communitytool.InstallOpts) (communitytool.Result, error) {
+				called = true
+				gotOpts = opts
+				return communitytool.Result{Tool: model.CommunityToolCodeGraph}, nil
+			}
+
+			step := communityToolInstallStep{id: "community-tool:codegraph", tool: model.CommunityToolCodeGraph, workspaceDir: "/work/project", force: tt.force}
+			if err := step.Run(); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if !called {
+				t.Fatal("installer seam was not called")
+			}
+			if gotOpts.ForceReinstall != tt.wantForce {
+				t.Fatalf("ForceReinstall = %v, want %v", gotOpts.ForceReinstall, tt.wantForce)
+			}
+		})
+	}
+}
+
+// TestInstallStagePlanThreadsForceCommunityTools verifies the install-side
+// wiring of task 4.4: Selection.ForceCommunityTools reaches the planned
+// communityToolInstallStep.
+func TestInstallStagePlanThreadsForceCommunityTools(t *testing.T) {
+	runtime := &installRuntime{
+		selection: model.Selection{
+			CommunityTools:      []model.CommunityToolID{model.CommunityToolCodeGraph},
+			ForceCommunityTools: true,
+		},
+		state: &runtimeState{},
+	}
+
+	plan := runtime.stagePlan()
+	var step *communityToolInstallStep
+	for i := range plan.Apply {
+		if s, ok := plan.Apply[i].(communityToolInstallStep); ok {
+			step = &s
+		}
+	}
+	if step == nil {
+		t.Fatal("stage plan has no communityToolInstallStep for selected CodeGraph tool")
+	}
+	if !step.force {
+		t.Fatal("communityToolInstallStep.force = false, want true when selection forces community tools")
+	}
 }
